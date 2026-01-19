@@ -1,4 +1,4 @@
-(function() {
+(function () {
   'use strict';
 
   // Avoid duplicate injection
@@ -26,6 +26,11 @@
     headerContainer: [
       '.job-details-jobs-unified-top-card__container--two-pane',
       '.jobs-unified-top-card'
+    ],
+    actionsContainer: [
+      '.jobs-unified-top-card__content--two-pane .display-flex.mt4',
+      '.jobs-apply-button--top-card',
+      '.jobs-unified-top-card__buttons-container'
     ]
   };
 
@@ -45,7 +50,13 @@
    */
   function getTextContent(element) {
     if (!element) return '';
-    return element.textContent.trim().replace(/\s+/g, ' ');
+    // Clone to manipulate without affecting DOM
+    const clone = element.cloneNode(true);
+    // Remove visually hidden or aria-hidden elements that cause text duplication
+    const hiddenEls = clone.querySelectorAll('[aria-hidden="true"], .visually-hidden, .sr-only, [style*="display: none"]');
+    hiddenEls.forEach(el => el.remove());
+
+    return clone.textContent.trim().replace(/\s+/g, ' ');
   }
 
   /**
@@ -73,10 +84,23 @@
     const companyNameEl = findElement(SELECTORS.companyName);
     const jobDescEl = findElement(SELECTORS.jobDescription);
 
+    let descriptionHtml = jobDescEl ? jobDescEl.innerHTML : '<p>Job description not found</p>';
+
+    // Clean up excessive whitespace and empty tags in description
+    descriptionHtml = descriptionHtml
+      .replace(/<span[^>]*>\s*<\/span>/g, '') // Remove empty spans
+      .replace(/<p[^>]*>\s*(&nbsp;|\s)*<\/p>/g, '') // Remove empty paragraphs
+      .replace(/(<br\s*\/?>\s*){3,}/g, '<br><br>') // Collapse multiple BRs
+      .replace(/style="[^"]*"/g, (match) => {
+        // Keep some styles but remove ones that cause layout issues in PDF
+        if (match.includes('color') || match.includes('font-weight')) return match;
+        return '';
+      });
+
     return {
       jobTitle: getTextContent(jobTitleEl) || 'Unknown Position',
       companyName: getTextContent(companyNameEl) || 'Unknown Company',
-      jobDescription: jobDescEl ? jobDescEl.innerHTML : '<p>Job description not found</p>',
+      jobDescription: descriptionHtml,
       jobDescriptionText: getTextContent(jobDescEl) || 'Job description not found'
     };
   }
@@ -97,31 +121,42 @@
     const logoSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="48" height="48" style="margin-bottom: 10px;"><rect width="128" height="128" rx="16" fill="#0a66c2"/><path d="M32 96V40h20v56H32zm10-64a12 12 0 110-24 12 12 0 010 24zm26 64V62c0-6 2-10 8-10 6 0 8 4 8 10v34h20V58c0-14-8-20-18-20-8 0-14 4-18 10v-8H48v56h20z" fill="white"/></svg>`;
 
     return `
-      <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; padding: 20px; line-height: 1.6;">
-        <div style="border-bottom: 2px solid #0a66c2; padding-bottom: 20px; margin-bottom: 30px;">
+      <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #333; padding: 20px; line-height: 1.5;">
+        <div style="border-bottom: 2px solid #0a66c2; padding-bottom: 15px; margin-bottom: 25px;">
           ${logoSvg}
-          <div style="font-size: 11px; color: #0a66c2; font-weight: bold; text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 4px;">LinkedIn Job Export</div>
-          <h1 style="font-size: 28px; line-height: 1.2; margin: 0 0 8px 0; color: #000; font-weight: 700;">${jobInfo.jobTitle}</h1>
-          <div style="font-size: 18px; color: #444; font-weight: 500;">${jobInfo.companyName}</div>
+          <div style="font-size: 10px; color: #0a66c2; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">LinkedIn Job Export</div>
+          <h1 style="font-size: 24px; line-height: 1.2; margin: 0 0 5px 0; color: #000; font-weight: 700; word-break: break-word;">${jobInfo.jobTitle}</h1>
+          <div style="font-size: 16px; color: #444; font-weight: 500;">${jobInfo.companyName}</div>
         </div>
         
-        <div class="job-description" style="font-size: 15px; color: #333; line-height: 1.7;">
+        <div class="job-description" style="font-size: 13px; color: #333; line-height: 1.6;">
           ${jobInfo.jobDescription}
         </div>
 
-        <div style="margin-top: 60px; padding-top: 15px; border-top: 1px solid #eee; font-size: 11px; color: #888; text-align: center;">
+        <div style="margin-top: 40px; padding-top: 15px; border-top: 1px solid #eee; font-size: 10px; color: #888; text-align: center;">
           Exported on ${new Date().toLocaleDateString()} | LinkedIn Job Exporter
         </div>
 
         <style>
-          .job-description h1, .job-description h2, .job-description h3 { 
-            font-size: 1.2em; margin: 24px 0 12px 0; color: #000; border-bottom: 1px solid #eee; padding-bottom: 5px;
+          .job-description h1, .job-description h2, .job-description h3, .job-description h4 { 
+            font-size: 1.1em; margin: 16px 0 8px 0; color: #000; font-weight: 700;
+            page-break-after: avoid;
           }
-          .job-description p { margin: 0 0 16px 0; }
-          .job-description ul, .job-description ol { margin: 0 0 16px 0; padding-left: 25px; }
-          .job-description li { margin-bottom: 8px; }
+          .job-description p { 
+            margin: 0 0 12px 0; 
+            page-break-inside: avoid;
+          }
+          .job-description ul, .job-description ol { 
+            margin: 0 0 12px 0; 
+            padding-left: 20px; 
+            page-break-inside: avoid;
+          }
+          .job-description li { 
+            margin-bottom: 4px; 
+            page-break-inside: avoid;
+          }
           .job-description strong { color: #111; font-weight: 600; }
-          .job-description span { line-height: inherit !important; }
+          .job-description * { max-width: 100%; word-break: break-word; }
         </style>
       </div>
     `;
@@ -146,8 +181,14 @@
         margin: [15, 15, 15, 15],
         filename: `${filename}.pdf`,
         image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: { scale: 2, useCORS: true },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' }
+        html2canvas: {
+          scale: 2,
+          useCORS: true,
+          logging: false,
+          letterRendering: true
+        },
+        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
+        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
       };
 
       await html2pdf().set(options).from(content).save();
@@ -173,20 +214,41 @@
     // Don't add button if already exists
     if (document.getElementById('linkedin-export-btn')) return;
 
-    const headerContainer = findElement(SELECTORS.headerContainer);
-    if (!headerContainer) {
-      // Retry after a short delay (LinkedIn loads content dynamically)
-      setTimeout(injectExportButton, 1000);
-      return;
+    // Try to find the actions container (where Apply/Save buttons are)
+    const actionsContainer = findElement(SELECTORS.actionsContainer);
+
+    if (actionsContainer) {
+      const button = document.createElement('button');
+      button.id = 'linkedin-export-btn';
+      button.textContent = 'Export PDF';
+      button.addEventListener('click', exportToPdf);
+
+      // If we found the specific container, append it
+      // LinkedIn usually has Apply/Save buttons in a flex container
+      // If actionsContainer is a button itself (fallback), we insert after its parent's last child
+      if (actionsContainer.classList.contains('display-flex')) {
+        actionsContainer.appendChild(button);
+      } else {
+        const parent = actionsContainer.closest('.display-flex') || actionsContainer.parentElement;
+        parent.appendChild(button);
+      }
+    } else {
+      // Fallback to original behavior if actions container not found
+      const headerContainer = findElement(SELECTORS.headerContainer);
+      if (!headerContainer) {
+        // Retry after a short delay (LinkedIn loads content dynamically)
+        setTimeout(injectExportButton, 1000);
+        return;
+      }
+
+      const button = document.createElement('button');
+      button.id = 'linkedin-export-btn';
+      button.textContent = 'Export PDF';
+      button.addEventListener('click', exportToPdf);
+
+      // Insert button after the header container
+      headerContainer.parentNode.insertBefore(button, headerContainer.nextSibling);
     }
-
-    const button = document.createElement('button');
-    button.id = 'linkedin-export-btn';
-    button.textContent = 'Export PDF';
-    button.addEventListener('click', exportToPdf);
-
-    // Insert button after the header container
-    headerContainer.parentNode.insertBefore(button, headerContainer.nextSibling);
   }
 
   /**
