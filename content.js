@@ -94,12 +94,35 @@
    * Build PDF content HTML
    */
   function buildPdfContent(jobInfo) {
+    const logoSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="48" height="48" style="margin-bottom: 10px;"><rect width="128" height="128" rx="16" fill="#0a66c2"/><path d="M32 96V40h20v56H32zm10-64a12 12 0 110-24 12 12 0 010 24zm26 64V62c0-6 2-10 8-10 6 0 8 4 8 10v34h20V58c0-14-8-20-18-20-8 0-14 4-18 10v-8H48v56h20z" fill="white"/></svg>`;
+
     return `
-      <div style="font-family: Arial, sans-serif; color: #333; line-height: 1.6;">
-        <h1 style="font-size: 24px; margin-bottom: 8px; color: #000;">${jobInfo.jobTitle}</h1>
-        <p style="font-size: 16px; color: #666; margin-bottom: 24px;">${jobInfo.companyName}</p>
-        <hr style="border: none; border-top: 1px solid #ddd; margin-bottom: 24px;">
-        <div style="font-size: 14px; white-space: pre-wrap;">${jobInfo.jobDescriptionText}</div>
+      <div style="font-family: 'Helvetica Neue', Helvetica, Arial, sans-serif; color: #333; padding: 20px; line-height: 1.6;">
+        <div style="border-bottom: 2px solid #0a66c2; padding-bottom: 20px; margin-bottom: 30px;">
+          ${logoSvg}
+          <div style="font-size: 11px; color: #0a66c2; font-weight: bold; text-transform: uppercase; letter-spacing: 1.2px; margin-bottom: 4px;">LinkedIn Job Export</div>
+          <h1 style="font-size: 28px; line-height: 1.2; margin: 0 0 8px 0; color: #000; font-weight: 700;">${jobInfo.jobTitle}</h1>
+          <div style="font-size: 18px; color: #444; font-weight: 500;">${jobInfo.companyName}</div>
+        </div>
+        
+        <div class="job-description" style="font-size: 15px; color: #333; line-height: 1.7;">
+          ${jobInfo.jobDescription}
+        </div>
+
+        <div style="margin-top: 60px; padding-top: 15px; border-top: 1px solid #eee; font-size: 11px; color: #888; text-align: center;">
+          Exported on ${new Date().toLocaleDateString()} | LinkedIn Job Exporter
+        </div>
+
+        <style>
+          .job-description h1, .job-description h2, .job-description h3 { 
+            font-size: 1.2em; margin: 24px 0 12px 0; color: #000; border-bottom: 1px solid #eee; padding-bottom: 5px;
+          }
+          .job-description p { margin: 0 0 16px 0; }
+          .job-description ul, .job-description ol { margin: 0 0 16px 0; padding-left: 25px; }
+          .job-description li { margin-bottom: 8px; }
+          .job-description strong { color: #111; font-weight: 600; }
+          .job-description span { line-height: inherit !important; }
+        </style>
       </div>
     `;
   }

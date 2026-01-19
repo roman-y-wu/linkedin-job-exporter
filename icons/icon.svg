@@ -1,4 +1,21 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
-  <rect width="128" height="128" rx="16" fill="#0a66c2"/>
-  <path d="M32 96V40h20v56H32zm10-64a12 12 0 110-24 12 12 0 010 24zm26 64V62c0-6 2-10 8-10 6 0 8 4 8 10v34h20V58c0-14-8-20-18-20-8 0-14 4-18 10v-8H48v56h20z" fill="white"/>
+  <!-- Background with LinkedIn blue -->
+  <rect width="128" height="128" rx="20" fill="#0a66c2"/>
+
+  <!-- Document shape -->
+  <path d="M36 24h40l20 20v60c0 4-4 8-8 8H36c-4 0-8-4-8-8V32c0-4 4-8 8-8z" fill="white"/>
+
+  <!-- Document fold corner -->
+  <path d="M76 24v20h20" fill="none" stroke="#0a66c2" stroke-width="2"/>
+  <path d="M76 24l20 20H76V24z" fill="#cce4f7"/>
+
+  <!-- Download arrow -->
+  <g fill="#0a66c2">
+    <!-- Arrow body -->
+    <rect x="50" y="52" width="12" height="24" rx="2"/>
+    <!-- Arrow head -->
+    <path d="M44 76l12 14 12-14z"/>
+    <!-- Base line -->
+    <rect x="42" y="94" width="28" height="4" rx="2"/>
+  </g>
 </svg>
