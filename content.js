@@ -77,6 +77,20 @@
   }
 
   /**
+   * Clean HTML content for PDF export
+   */
+  function cleanDescriptionHtml(html) {
+    return html
+      .replace(/<span[^>]*>\s*<\/span>/g, '')
+      .replace(/<p[^>]*>\s*(&nbsp;|\s)*<\/p>/g, '')
+      .replace(/(<br\s*\/?>\s*){3,}/g, '<br><br>')
+      .replace(/style="[^"]*"/g, function (match) {
+        if (match.includes('color') || match.includes('font-weight')) return match;
+        return '';
+      });
+  }
+
+  /**
    * Extract job information from the page
    */
   function extractJobInfo() {
@@ -84,24 +98,12 @@
     const companyNameEl = findElement(SELECTORS.companyName);
     const jobDescEl = findElement(SELECTORS.jobDescription);
 
-    let descriptionHtml = jobDescEl ? jobDescEl.innerHTML : '<p>Job description not found</p>';
-
-    // Clean up excessive whitespace and empty tags in description
-    descriptionHtml = descriptionHtml
-      .replace(/<span[^>]*>\s*<\/span>/g, '') // Remove empty spans
-      .replace(/<p[^>]*>\s*(&nbsp;|\s)*<\/p>/g, '') // Remove empty paragraphs
-      .replace(/(<br\s*\/?>\s*){3,}/g, '<br><br>') // Collapse multiple BRs
-      .replace(/style="[^"]*"/g, (match) => {
-        // Keep some styles but remove ones that cause layout issues in PDF
-        if (match.includes('color') || match.includes('font-weight')) return match;
-        return '';
-      });
+    const rawHtml = jobDescEl ? jobDescEl.innerHTML : '<p>Job description not found</p>';
 
     return {
       jobTitle: getTextContent(jobTitleEl) || 'Unknown Position',
       companyName: getTextContent(companyNameEl) || 'Unknown Company',
-      jobDescription: descriptionHtml,
-      jobDescriptionText: getTextContent(jobDescEl) || 'Job description not found'
+      jobDescription: cleanDescriptionHtml(rawHtml)
     };
   }
 
