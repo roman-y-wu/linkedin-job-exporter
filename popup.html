@@ -3,19 +3,68 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>LinkedIn Job Exporter</title>
+    <title>LinkedIn Job Tracker</title>
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
     <main class="popup">
-      <h1>LinkedIn Job Exporter</h1>
-      <p id="status" class="status">打开 LinkedIn 职位详情页后可导出 TXT。</p>
-      <div class="actions">
-        <button id="inject-btn" type="button">显示导出按钮</button>
-        <button id="export-btn" type="button">直接导出 TXT</button>
-      </div>
-      <p class="hint">文件名格式：<code>yyyymmdd_Company_Position_Location.txt</code></p>
+      <h1>LinkedIn Job Tracker</h1>
+      <p id="status" class="status">准备就绪。</p>
+
+      <section class="card">
+        <h2>CSV Binding</h2>
+        <p id="binding-summary" class="binding-summary">未绑定 CSV</p>
+        <p id="binding-detail" class="binding-detail"></p>
+        <div class="button-row">
+          <button id="bind-existing-btn" type="button">绑定现有 CSV</button>
+          <button id="create-template-btn" type="button">创建标准模板 CSV</button>
+        </div>
+      </section>
+
+      <section class="card">
+        <h2>Current Job</h2>
+        <p id="job-summary" class="job-summary">请打开 LinkedIn 职位详情页。</p>
+      </section>
+
+      <section class="card">
+        <h2>Track Record</h2>
+        <label class="field-label" for="status-select">
+          Status
+          <select id="status-select">
+            <option value="Saved">Saved</option>
+            <option value="Applied">Applied</option>
+            <option value="Interview">Interview</option>
+            <option value="Rejected">Rejected</option>
+            <option value="Ghosted">Ghosted</option>
+          </select>
+        </label>
+
+        <div class="round-grid">
+          <label><input id="round1-pass" type="checkbox" /> Round 1 Pass</label>
+          <label><input id="round2-pass" type="checkbox" /> Round 2 Pass</label>
+          <label><input id="round3-pass" type="checkbox" /> Round 3 Pass</label>
+        </div>
+
+        <label class="field-label" for="notes-input">
+          Notes
+          <textarea id="notes-input" rows="3" placeholder="Optional notes..."></textarea>
+        </label>
+
+        <div class="button-row">
+          <button id="save-track-btn" type="button">保存追踪</button>
+          <button id="export-btn" type="button">导出 TXT（并追踪）</button>
+        </div>
+
+        <button id="inject-btn" type="button" class="secondary">显示页面按钮</button>
+      </section>
+
+      <p class="hint">
+        文件命名：<code>yyyymmdd_Company_Position_Location.txt</code><br />
+        CSV 表头固定：<code>snake_case</code> 标准列。
+      </p>
     </main>
+
+    <script src="lib/tracker_csv.js"></script>
     <script src="popup.js"></script>
   </body>
 </html>

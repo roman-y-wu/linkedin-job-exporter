@@ -3,7 +3,10 @@
   "name": "LinkedIn Job Exporter",
   "version": "1.0.0",
   "description": "Export LinkedIn job descriptions to TXT with one click",
-  "permissions": ["activeTab", "scripting", "tabs"],
+  "permissions": ["activeTab", "scripting", "tabs", "storage"],
+  "background": {
+    "service_worker": "background.js"
+  },
   "action": {
     "default_popup": "popup.html",
     "default_icon": {

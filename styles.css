@@ -1,19 +1,23 @@
-#linkedin-export-btn {
+#linkedin-export-btn,
+#linkedin-track-btn {
   display: inline-flex;
   align-items: center;
   justify-content: center;
   padding: 8px 16px;
-  margin: 0 0 0 8px; /* Added left margin for spacing from OneClick */
-  background-color: #0a66c2;
-  color: white;
+  margin: 0 0 0 8px;
   border: none;
   border-radius: 24px;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   font-size: 14px;
   font-weight: 600;
-  height: 40px; /* Align with standard LinkedIn button heights */
+  height: 40px;
   cursor: pointer;
   transition: background-color 0.2s ease;
+  color: #ffffff;
+}
+
+#linkedin-export-btn {
+  background-color: #0a66c2;
 }
 
 #linkedin-export-btn:hover {
@@ -26,6 +30,173 @@
 }
 
 #linkedin-export-btn::before {
-  content: '📄';
+  content: 'TXT';
   margin-right: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+#linkedin-track-btn {
+  background-color: #057642;
+}
+
+#linkedin-track-btn:hover {
+  background-color: #045d35;
+}
+
+#linkedin-track-btn::before {
+  content: 'TRK';
+  margin-right: 6px;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+}
+
+#linkedin-job-tools-floating {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483646;
+  display: flex;
+  gap: 8px;
+}
+
+.linkedin-track-panel {
+  position: fixed;
+  right: 16px;
+  bottom: 72px;
+  width: 320px;
+  padding: 12px;
+  border: 1px solid #d0d7de;
+  border-radius: 12px;
+  background: #ffffff;
+  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+  z-index: 2147483647;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  color: #1f2328;
+}
+
+.linkedin-hidden {
+  display: none !important;
+}
+
+.linkedin-track-panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+
+.linkedin-track-close-btn {
+  border: none;
+  background: #f6f8fa;
+  color: #57606a;
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+  font-size: 12px;
+}
+
+.linkedin-track-close-btn:hover {
+  background: #eaeef2;
+}
+
+.linkedin-track-job {
+  font-size: 12px;
+  color: #57606a;
+  margin: 0 0 8px 0;
+}
+
+.linkedin-track-message {
+  min-height: 16px;
+  margin: 0 0 8px 0;
+  font-size: 12px;
+  color: #57606a;
+}
+
+.linkedin-track-message-error {
+  color: #cf222e;
+}
+
+.linkedin-track-label {
+  display: block;
+  font-size: 12px;
+  color: #24292f;
+  margin-bottom: 8px;
+}
+
+.linkedin-track-label select,
+.linkedin-track-label textarea {
+  width: 100%;
+  margin-top: 4px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  padding: 7px 8px;
+  font-size: 12px;
+  color: #24292f;
+  background: #ffffff;
+}
+
+.linkedin-track-rounds {
+  display: grid;
+  gap: 6px;
+  margin: 8px 0;
+  font-size: 12px;
+}
+
+.linkedin-track-rounds label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.linkedin-track-panel-actions {
+  display: flex;
+  justify-content: flex-end;
+  margin-top: 8px;
+}
+
+.linkedin-track-panel-actions button {
+  border: none;
+  border-radius: 8px;
+  background: #0969da;
+  color: #ffffff;
+  cursor: pointer;
+  font-size: 12px;
+  font-weight: 600;
+  padding: 8px 12px;
+}
+
+.linkedin-track-panel-actions button:hover {
+  background: #0550ae;
+}
+
+.linkedin-track-panel-actions button:disabled {
+  background: #8eb7e5;
+  cursor: not-allowed;
+}
+
+.linkedin-job-tracker-toast {
+  position: fixed;
+  right: 16px;
+  bottom: 16px;
+  z-index: 2147483647;
+  background: #057642;
+  color: #ffffff;
+  padding: 8px 10px;
+  border-radius: 8px;
+  font-size: 12px;
+  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16);
+}
+
+.linkedin-job-tracker-toast-error {
+  background: #cf222e;
+}
+
+.linkedin-job-tracker-toast-hidden {
+  opacity: 0;
+  transform: translateY(6px);
+  transition: opacity 0.25s ease, transform 0.25s ease;
+  pointer-events: none;
 }

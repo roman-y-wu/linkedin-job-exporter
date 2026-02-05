@@ -4,13 +4,13 @@
 
 body {
   margin: 0;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-  color: #1f2328;
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
   background: #f6f8fa;
+  color: #1f2328;
 }
 
 .popup {
-  width: 320px;
+  width: 360px;
   padding: 14px;
 }
 
@@ -20,26 +20,103 @@ h1 {
   font-weight: 700;
 }
 
-.status {
-  margin: 0 0 12px;
-  color: #57606a;
+h2 {
+  margin: 0 0 8px;
   font-size: 13px;
+  font-weight: 700;
+  color: #1f2328;
+}
+
+.status {
+  margin: 0 0 10px;
+  color: #57606a;
+  font-size: 12px;
   line-height: 1.4;
 }
 
-.actions {
+.status.error {
+  color: #cf222e;
+}
+
+.status.success {
+  color: #057642;
+}
+
+.card {
+  background: #ffffff;
+  border: 1px solid #d0d7de;
+  border-radius: 10px;
+  padding: 10px;
+  margin-bottom: 10px;
+}
+
+.binding-summary {
+  margin: 0 0 4px;
+  font-size: 12px;
+  font-weight: 600;
+}
+
+.binding-detail {
+  margin: 0 0 8px;
+  font-size: 12px;
+  color: #57606a;
+  min-height: 16px;
+}
+
+.job-summary {
+  margin: 0;
+  font-size: 12px;
+  color: #57606a;
+  line-height: 1.4;
+  min-height: 32px;
+}
+
+.field-label {
+  display: block;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+select,
+textarea {
+  width: 100%;
+  margin-top: 4px;
+  border: 1px solid #d0d7de;
+  border-radius: 8px;
+  padding: 7px 8px;
+  font-size: 12px;
+  color: #1f2328;
+  background: #ffffff;
+}
+
+.round-grid {
   display: grid;
+  gap: 6px;
+  margin: 8px 0 10px;
+  font-size: 12px;
+}
+
+.round-grid label {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.button-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
   gap: 8px;
+  margin-bottom: 8px;
 }
 
 button {
-  border: 0;
+  border: none;
   border-radius: 8px;
-  padding: 10px 12px;
-  font-size: 13px;
+  padding: 9px 10px;
+  font-size: 12px;
   font-weight: 600;
   cursor: pointer;
-  color: #fff;
+  color: #ffffff;
   background: #0a66c2;
 }
 
@@ -52,10 +129,21 @@ button:disabled {
   cursor: not-allowed;
 }
 
+button.secondary {
+  width: 100%;
+  margin-top: 4px;
+  background: #57606a;
+}
+
+button.secondary:hover {
+  background: #444c56;
+}
+
 .hint {
-  margin: 10px 0 0;
+  margin: 0;
+  font-size: 11px;
   color: #57606a;
-  font-size: 12px;
+  line-height: 1.4;
 }
 
 code {
