@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>LinkedIn Job Exporter</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="popup">
+      <h1>LinkedIn Job Exporter</h1>
+      <p id="status" class="status">打开 LinkedIn 职位详情页后可导出 TXT。</p>
+      <div class="actions">
+        <button id="inject-btn" type="button">显示导出按钮</button>
+        <button id="export-btn" type="button">直接导出 TXT</button>
+      </div>
+      <p class="hint">文件名格式：<code>yyyymmdd_Company_Position_Location.txt</code></p>
+    </main>
+    <script src="popup.js"></script>
+  </body>
+</html>

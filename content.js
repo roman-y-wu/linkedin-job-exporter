@@ -18,6 +18,19 @@
       '.jobs-unified-top-card__company-name a',
       '.jobs-unified-top-card__company-name'
     ],
+    location: [
+      '.job-details-jobs-unified-top-card__tertiary-description-container .tvm__text',
+      '.jobs-unified-top-card__tertiary-description-container .tvm__text',
+      '.job-details-jobs-unified-top-card__primary-description-container .t-black--light',
+      '.jobs-unified-top-card__primary-description-container .t-black--light',
+      '.jobs-unified-top-card__bullet'
+    ],
+    locationContainer: [
+      '.job-details-jobs-unified-top-card__tertiary-description-container',
+      '.jobs-unified-top-card__tertiary-description-container',
+      '.job-details-jobs-unified-top-card__primary-description-container',
+      '.jobs-unified-top-card__primary-description-container'
+    ],
     jobDescription: [
       '.jobs-description__content',
       '.jobs-box__html-content',
@@ -30,9 +43,52 @@
     actionsContainer: [
       '.jobs-unified-top-card__content--two-pane .display-flex.mt4',
       '.jobs-apply-button--top-card',
-      '.jobs-unified-top-card__buttons-container'
+      '.jobs-unified-top-card__buttons-container',
+      '.job-details-jobs-unified-top-card__buttons-container',
+      '.jobs-unified-top-card__content--two-pane .jobs-unified-top-card__buttons-container'
     ]
   };
+
+  let keepAliveTimer = null;
+
+  function findActionsContainerFallback() {
+    // Try to locate the "Apply/Save" button row and append our export button there.
+    const candidates = [];
+    const byAria = [
+      'button[aria-label*="Apply"]',
+      'button[aria-label*="Quick Apply"]',
+      'button[aria-label*="Save"]',
+      'button[aria-label*="申请"]',
+      'button[aria-label*="快速申请"]',
+      'button[aria-label*="保存"]',
+      'a[aria-label*="Apply"]'
+    ];
+    for (const sel of byAria) {
+      const el = document.querySelector(sel);
+      if (el) candidates.push(el);
+    }
+
+    // Fallback: first visible button that looks like an action in the job header.
+    const header = findElement(SELECTORS.headerContainer) || document;
+    const anyHeaderButton = header.querySelector('button, a[role="button"]');
+    if (anyHeaderButton) candidates.push(anyHeaderButton);
+
+    const isGoodContainer = (node) => {
+      if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
+      const buttons = node.querySelectorAll('button, a[role="button"], a');
+      return buttons.length >= 2;
+    };
+
+    for (const el of candidates) {
+      let cur = el;
+      for (let i = 0; i < 8 && cur; i++) {
+        if (isGoodContainer(cur)) return cur;
+        cur = cur.parentElement;
+      }
+    }
+
+    return null;
+  }
 
   /**
    * Find element using multiple selectors (fallback strategy)
@@ -60,34 +116,63 @@
   }
 
   /**
-   * Get current date in MMDD format
+   * Get current date in YYYYMMDD format
    */
   function getDateString() {
     const now = new Date();
+    const year = String(now.getFullYear());
     const month = String(now.getMonth() + 1).padStart(2, '0');
     const day = String(now.getDate()).padStart(2, '0');
-    return `${month}${day}`;
+    return `${year}${month}${day}`;
   }
 
   /**
    * Sanitize filename (remove invalid characters)
    */
   function sanitizeFilename(name) {
-    return name.replace(/[<>:"/\\|?*]/g, '-').replace(/\s+/g, ' ').trim();
+    return name
+      .replace(/[<>:"/\\|?*]/g, '')
+      .replace(/\s+/g, '_')
+      .replace(/_+/g, '_')
+      .replace(/^_+|_+$/g, '')
+      .trim();
+  }
+
+  function createExportButton() {
+    const button = document.createElement('button');
+    button.id = 'linkedin-export-btn';
+    button.textContent = 'Export TXT';
+    button.addEventListener('click', exportToTxt);
+    return button;
+  }
+
+  function injectFloatingButton() {
+    if (document.getElementById('linkedin-export-btn')) return;
+    const button = createExportButton();
+    button.style.position = 'fixed';
+    button.style.right = '16px';
+    button.style.bottom = '16px';
+    button.style.zIndex = '2147483647';
+    document.body.appendChild(button);
   }
 
   /**
-   * Clean HTML content for PDF export
+   * Extract job location from location text blocks
    */
-  function cleanDescriptionHtml(html) {
-    return html
-      .replace(/<span[^>]*>\s*<\/span>/g, '')
-      .replace(/<p[^>]*>\s*(&nbsp;|\s)*<\/p>/g, '')
-      .replace(/(<br\s*\/?>\s*){3,}/g, '<br><br>')
-      .replace(/style="[^"]*"/g, function (match) {
-        if (match.includes('color') || match.includes('font-weight')) return match;
-        return '';
-      });
+  function extractLocation() {
+    const directLocationEl = findElement(SELECTORS.location);
+    const directLocationText = getTextContent(directLocationEl);
+    if (directLocationText) {
+      return directLocationText.split(/[·•|]/)[0].trim();
+    }
+
+    const locationContainerEl = findElement(SELECTORS.locationContainer);
+    const locationContainerText = getTextContent(locationContainerEl);
+    if (locationContainerText) {
+      return locationContainerText.split(/[·•|]/)[0].trim();
+    }
+
+    return '';
   }
 
   /**
@@ -97,77 +182,45 @@
     const jobTitleEl = findElement(SELECTORS.jobTitle);
     const companyNameEl = findElement(SELECTORS.companyName);
     const jobDescEl = findElement(SELECTORS.jobDescription);
-
-    const rawHtml = jobDescEl ? jobDescEl.innerHTML : '<p>Job description not found</p>';
+    const locationText = extractLocation();
 
     return {
       jobTitle: getTextContent(jobTitleEl) || 'Unknown Position',
       companyName: getTextContent(companyNameEl) || 'Unknown Company',
-      jobDescription: cleanDescriptionHtml(rawHtml)
+      location: locationText || 'Unknown Location',
+      jobDescriptionText: getTextContent(jobDescEl) || 'Job description not found'
     };
   }
 
   /**
-   * Generate filename for the PDF
+   * Generate filename for the TXT
    */
-  function generateFilename(companyName, jobTitle) {
+  function generateFilename(companyName, jobTitle, location) {
     const date = getDateString();
-    const filename = `${companyName} - ${jobTitle} - ${date}`;
+    const filename = `${date}_${companyName}_${jobTitle}_${location}`;
     return sanitizeFilename(filename);
   }
 
   /**
-   * Build PDF content HTML
+   * Build TXT content
    */
-  function buildPdfContent(jobInfo) {
-    const logoSvg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128" width="48" height="48" style="margin-bottom: 10px;"><rect width="128" height="128" rx="16" fill="#0a66c2"/><path d="M32 96V40h20v56H32zm10-64a12 12 0 110-24 12 12 0 010 24zm26 64V62c0-6 2-10 8-10 6 0 8 4 8 10v34h20V58c0-14-8-20-18-20-8 0-14 4-18 10v-8H48v56h20z" fill="white"/></svg>`;
-
-    return `
-      <div style="font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; color: #333; padding: 20px; line-height: 1.5;">
-        <div style="border-bottom: 2px solid #0a66c2; padding-bottom: 15px; margin-bottom: 25px;">
-          ${logoSvg}
-          <div style="font-size: 10px; color: #0a66c2; font-weight: bold; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 4px;">LinkedIn Job Export</div>
-          <h1 style="font-size: 24px; line-height: 1.2; margin: 0 0 5px 0; color: #000; font-weight: 700; word-break: break-word;">${jobInfo.jobTitle}</h1>
-          <div style="font-size: 16px; color: #444; font-weight: 500;">${jobInfo.companyName}</div>
-        </div>
-        
-        <div class="job-description" style="font-size: 13px; color: #333; line-height: 1.6;">
-          ${jobInfo.jobDescription}
-        </div>
-
-        <div style="margin-top: 40px; padding-top: 15px; border-top: 1px solid #eee; font-size: 10px; color: #888; text-align: center;">
-          Exported on ${new Date().toLocaleDateString()} | LinkedIn Job Exporter
-        </div>
-
-        <style>
-          .job-description h1, .job-description h2, .job-description h3, .job-description h4 { 
-            font-size: 1.1em; margin: 16px 0 8px 0; color: #000; font-weight: 700;
-            page-break-after: avoid;
-          }
-          .job-description p { 
-            margin: 0 0 12px 0; 
-            page-break-inside: avoid;
-          }
-          .job-description ul, .job-description ol { 
-            margin: 0 0 12px 0; 
-            padding-left: 20px; 
-            page-break-inside: avoid;
-          }
-          .job-description li { 
-            margin-bottom: 4px; 
-            page-break-inside: avoid;
-          }
-          .job-description strong { color: #111; font-weight: 600; }
-          .job-description * { max-width: 100%; word-break: break-word; }
-        </style>
-      </div>
-    `;
+  function buildTxtContent(jobInfo) {
+    const exportedOn = new Date().toLocaleDateString();
+    return [
+      `Job Title: ${jobInfo.jobTitle}`,
+      `Company: ${jobInfo.companyName}`,
+      `Location: ${jobInfo.location}`,
+      `Exported On: ${exportedOn}`,
+      '',
+      'Job Description:',
+      jobInfo.jobDescriptionText
+    ].join('\n');
   }
 
   /**
-   * Export job description to PDF
+   * Export job description to TXT
    */
-  async function exportToPdf() {
+  async function exportToTxt() {
     const button = document.getElementById('linkedin-export-btn');
     if (button) {
       button.textContent = 'Exporting...';
@@ -176,34 +229,27 @@
 
     try {
       const jobInfo = extractJobInfo();
-      const filename = generateFilename(jobInfo.companyName, jobInfo.jobTitle);
-      const content = buildPdfContent(jobInfo);
-
-      const options = {
-        margin: [15, 15, 15, 15],
-        filename: `${filename}.pdf`,
-        image: { type: 'jpeg', quality: 0.98 },
-        html2canvas: {
-          scale: 2,
-          useCORS: true,
-          logging: false,
-          letterRendering: true
-        },
-        jsPDF: { unit: 'mm', format: 'a4', orientation: 'portrait' },
-        pagebreak: { mode: ['avoid-all', 'css', 'legacy'] }
-      };
-
-      await html2pdf().set(options).from(content).save();
+      const filename = generateFilename(jobInfo.companyName, jobInfo.jobTitle, jobInfo.location);
+      const content = buildTxtContent(jobInfo);
+      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement('a');
+      link.href = url;
+      link.download = `${filename}.txt`;
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      URL.revokeObjectURL(url);
 
       if (button) {
-        button.textContent = 'Export PDF';
+        button.textContent = 'Export TXT';
         button.disabled = false;
       }
     } catch (error) {
-      console.error('LinkedIn Job Exporter: Failed to export PDF', error);
-      alert('Failed to export PDF. Please try again.');
+      console.error('LinkedIn Job Exporter: Failed to export TXT', error);
+      alert('Failed to export TXT. Please try again.');
       if (button) {
-        button.textContent = 'Export PDF';
+        button.textContent = 'Export TXT';
         button.disabled = false;
       }
     }
@@ -216,47 +262,64 @@
     // Don't add button if already exists
     if (document.getElementById('linkedin-export-btn')) return;
 
-    // Try to find the actions container (where Apply/Save buttons are)
-    const actionsContainer = findElement(SELECTORS.actionsContainer);
-
-    if (actionsContainer) {
-      const button = document.createElement('button');
-      button.id = 'linkedin-export-btn';
-      button.textContent = 'Export PDF';
-      button.addEventListener('click', exportToPdf);
-
-      // If we found the specific container, append it
-      // LinkedIn usually has Apply/Save buttons in a flex container
-      // If actionsContainer is a button itself (fallback), we insert after its parent's last child
-      if (actionsContainer.classList.contains('display-flex')) {
-        actionsContainer.appendChild(button);
-      } else {
-        const parent = actionsContainer.closest('.display-flex') || actionsContainer.parentElement;
-        parent.appendChild(button);
-      }
-    } else {
-      // Fallback to original behavior if actions container not found
-      const headerContainer = findElement(SELECTORS.headerContainer);
-      if (!headerContainer) {
-        // Retry after a short delay (LinkedIn loads content dynamically)
-        setTimeout(injectExportButton, 1000);
+    try {
+      // Try to find the actions container (where Apply/Save buttons are)
+      const actionsContainer = findElement(SELECTORS.actionsContainer) || findActionsContainerFallback();
+      if (!actionsContainer) {
+        console.warn('LinkedIn Job Exporter: actions container not found; using floating button fallback');
+        injectFloatingButton();
         return;
       }
 
-      const button = document.createElement('button');
-      button.id = 'linkedin-export-btn';
-      button.textContent = 'Export PDF';
-      button.addEventListener('click', exportToPdf);
+      const targetContainer = actionsContainer.classList.contains('display-flex')
+        ? actionsContainer
+        : actionsContainer.closest('.display-flex') || actionsContainer.parentElement;
 
-      // Insert button after the header container
-      headerContainer.parentNode.insertBefore(button, headerContainer.nextSibling);
+      if (!targetContainer) {
+        console.warn('LinkedIn Job Exporter: no target container found; using floating button fallback');
+        injectFloatingButton();
+        return;
+      }
+
+      targetContainer.appendChild(createExportButton());
+    } catch (error) {
+      console.warn('LinkedIn Job Exporter: failed to inject near actions; using floating fallback', error);
+      injectFloatingButton();
     }
+  }
+
+  function setupRuntimeMessageHandlers() {
+    chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+      if (!message || !message.type) return undefined;
+
+      if (message.type === 'PING') {
+        sendResponse({ ok: true });
+        return undefined;
+      }
+
+      if (message.type === 'INJECT_BUTTON') {
+        injectExportButton();
+        sendResponse({ ok: true });
+        return undefined;
+      }
+
+      if (message.type === 'EXPORT_TXT') {
+        exportToTxt()
+          .then(() => sendResponse({ ok: true }))
+          .catch((error) => sendResponse({ ok: false, error: error?.message || String(error) }));
+        return true;
+      }
+
+      return undefined;
+    });
   }
 
   /**
    * Initialize the extension
    */
   function init() {
+    console.log('LinkedIn Job Exporter: content script loaded', { href: location.href });
+    setupRuntimeMessageHandlers();
     // Initial injection
     injectExportButton();
 
@@ -270,6 +333,15 @@
     });
 
     observer.observe(document.body, { childList: true, subtree: true });
+
+    if (keepAliveTimer) {
+      clearInterval(keepAliveTimer);
+    }
+    keepAliveTimer = window.setInterval(() => {
+      if (!document.getElementById('linkedin-export-btn')) {
+        injectExportButton();
+      }
+    }, 2000);
   }
 
   // Start when DOM is ready
