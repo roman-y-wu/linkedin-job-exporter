@@ -49,6 +49,62 @@
     ]
   };
 
+  const EXPAND_CONTROL_SELECTORS = [
+    'button[aria-label*="show more" i]',
+    'button[aria-label*="see more" i]',
+    'button[aria-label*="description" i]',
+    'button[aria-label*="显示更多"]',
+    'button[aria-label*="展开"]',
+    'button.jobs-description__footer-button',
+    'a[role="button"][aria-label*="show more" i]'
+  ];
+
+  const EXPAND_TEXT_PATTERNS = [/show more/i, /see more/i, /read more/i, /显示更多/, /展开/, /查看更多/];
+  const COLLAPSE_TEXT_PATTERNS = [/show less/i, /see less/i, /collapse/i, /收起/, /隐藏/];
+  const SECTION_HEADING_LABELS = [
+    'About the job',
+    'Role',
+    'Responsibilities',
+    'Qualifications',
+    'Required Knowledge, Skills And Abilities',
+    'Preferred Qualifications',
+    'Shift',
+    'Pay Transparency',
+    'Pay',
+    'Additional Details',
+    'DISCLAIMER',
+    'Employment Equity Statement',
+    'Equal Opportunity Statement',
+    'What We Offer',
+    'What To Expect During The Interview Process',
+    'Benefits',
+    'Compensation',
+    'Schedule',
+    'The Foundation for Success',
+    'The Homie Way',
+    'Belonging at Homebase',
+    'Hey, We’re Homebase'
+  ];
+
+  const DESCRIPTION_NOISE_SELECTORS = [
+    '[aria-hidden="true"]',
+    '.visually-hidden',
+    '.sr-only',
+    '[style*="display: none"]',
+    '[hidden]',
+    'script',
+    'style',
+    'noscript',
+    'template',
+    'button',
+    'input',
+    'textarea',
+    'select'
+  ].join(', ');
+
+  const HEADING_TAGS = new Set(['H1', 'H2', 'H3', 'H4', 'H5', 'H6']);
+  const BLOCK_TAGS = new Set(['P', 'DIV', 'SECTION', 'ARTICLE', 'BLOCKQUOTE', 'PRE']);
+
   function sendRuntimeMessage(message) {
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(message, (response) => {
@@ -127,6 +183,451 @@
     return match ? match[1] : '';
   }
 
+  function delay(ms) {
+    return new Promise((resolve) => window.setTimeout(resolve, ms));
+  }
+
+  function isElementVisible(element) {
+    if (!element || typeof element.getClientRects !== 'function') return false;
+    const rects = element.getClientRects();
+    return rects.length > 0;
+  }
+
+  function matchesExpandControl(element) {
+    const text = [
+      element.textContent || '',
+      element.getAttribute('aria-label') || '',
+      element.getAttribute('title') || ''
+    ].join(' ');
+    if (!text) return false;
+    if (COLLAPSE_TEXT_PATTERNS.some((pattern) => pattern.test(text))) return false;
+    return EXPAND_TEXT_PATTERNS.some((pattern) => pattern.test(text));
+  }
+
+  async function expandJobDescriptionIfNeeded() {
+    const descriptionElement = findElement(SELECTORS.jobDescription);
+    if (!descriptionElement) return false;
+
+    const candidates = new Set();
+    for (const selector of EXPAND_CONTROL_SELECTORS) {
+      descriptionElement.querySelectorAll(selector).forEach((element) => candidates.add(element));
+      document.querySelectorAll(selector).forEach((element) => candidates.add(element));
+    }
+
+    descriptionElement.querySelectorAll('button, a[role="button"], span[role="button"]').forEach((element) => {
+      if (matchesExpandControl(element)) {
+        candidates.add(element);
+      }
+    });
+    document.querySelectorAll('button, a[role="button"], span[role="button"]').forEach((element) => {
+      if (matchesExpandControl(element)) {
+        candidates.add(element);
+      }
+    });
+
+    let clicked = false;
+    for (const candidate of candidates) {
+      if (!isElementVisible(candidate) || candidate.disabled) continue;
+
+      const ariaExpanded = String(candidate.getAttribute('aria-expanded') || '').toLowerCase();
+      if (ariaExpanded === 'true') continue;
+
+      try {
+        candidate.click();
+        clicked = true;
+      } catch (_error) {
+        // Ignore click errors and continue trying other candidates.
+      }
+    }
+
+    if (clicked) {
+      await delay(220);
+      await new Promise((resolve) => window.requestAnimationFrame(() => window.requestAnimationFrame(resolve)));
+    }
+    return clicked;
+  }
+
+  function normalizeInlineText(text) {
+    return String(text || '').replace(/\u00a0/g, ' ').replace(/[ \t]+/g, ' ').trim();
+  }
+
+  function buildDescriptionClone(sourceElement) {
+    const clone = sourceElement.cloneNode(true);
+    clone.querySelectorAll(DESCRIPTION_NOISE_SELECTORS).forEach((element) => element.remove());
+    return clone;
+  }
+
+  function normalizeParagraphText(text) {
+    if (!text) return '';
+    const normalizedLines = String(text)
+      .replace(/\u00a0/g, ' ')
+      .replace(/\r\n/g, '\n')
+      .split('\n')
+      .map((line) => line.replace(/[ \t]+/g, ' ').trim())
+      .filter((line) => line.length > 0);
+
+    if (normalizedLines.length === 0) return '';
+    const merged = normalizedLines
+      .join('\n')
+      .replace(/([.!?;:])([A-Z])/g, '$1 $2')
+      .replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2');
+    return merged.trim();
+  }
+
+  function appendParagraphLines(lines, text) {
+    const paragraph = normalizeParagraphText(text);
+    if (!paragraph) return;
+    paragraph.split('\n').forEach((line) => lines.push(line));
+    lines.push('');
+  }
+
+  function hasNestedListChild(element) {
+    return Array.from(element.children).some((child) => {
+      const tag = child.tagName ? child.tagName.toUpperCase() : '';
+      return tag === 'UL' || tag === 'OL';
+    });
+  }
+
+  function appendListItem(lines, markerPrefix, continuationPrefix, text) {
+    const itemText = normalizeParagraphText(text);
+    if (!itemText) return;
+    const itemLines = itemText.split('\n');
+    lines.push(`${markerPrefix}${itemLines[0]}`);
+    for (let i = 1; i < itemLines.length; i += 1) {
+      lines.push(`${continuationPrefix}${itemLines[i]}`);
+    }
+  }
+
+  function renderListText(listElement, lines, depth) {
+    const isOrdered = listElement.tagName.toUpperCase() === 'OL';
+    const startNumber = Math.max(1, Number.parseInt(listElement.getAttribute('start') || '1', 10) || 1);
+    const items = Array.from(listElement.children).filter((child) => child.tagName && child.tagName.toUpperCase() === 'LI');
+
+    for (let index = 0; index < items.length; index += 1) {
+      const item = items[index];
+      const itemClone = item.cloneNode(true);
+      itemClone.querySelectorAll(':scope > ul, :scope > ol').forEach((nested) => nested.remove());
+
+      const indent = '  '.repeat(depth);
+      const marker = isOrdered ? `${startNumber + index}. ` : '- ';
+      appendListItem(lines, `${indent}${marker}`, `${indent}  `, itemClone.innerText || itemClone.textContent || '');
+
+      const nestedLists = Array.from(item.children).filter((child) => {
+        const tag = child.tagName ? child.tagName.toUpperCase() : '';
+        return tag === 'UL' || tag === 'OL';
+      });
+      for (const nestedList of nestedLists) {
+        renderListText(nestedList, lines, depth + 1);
+      }
+    }
+    lines.push('');
+  }
+
+  function renderStructuredTextFromContainer(container, lines) {
+    for (const childNode of container.childNodes) {
+      if (childNode.nodeType === Node.TEXT_NODE) {
+        appendParagraphLines(lines, childNode.nodeValue || '');
+        continue;
+      }
+      if (childNode.nodeType !== Node.ELEMENT_NODE) continue;
+
+      const tag = childNode.tagName.toUpperCase();
+      if (tag === 'UL' || tag === 'OL') {
+        renderListText(childNode, lines, 0);
+        continue;
+      }
+      if (HEADING_TAGS.has(tag)) {
+        appendParagraphLines(lines, childNode.innerText || childNode.textContent || '');
+        continue;
+      }
+      if (BLOCK_TAGS.has(tag) || tag === 'MAIN') {
+        if (hasNestedListChild(childNode)) {
+          renderStructuredTextFromContainer(childNode, lines);
+        } else {
+          appendParagraphLines(lines, childNode.innerText || childNode.textContent || '');
+        }
+        continue;
+      }
+      if (tag === 'BR') {
+        lines.push('');
+        continue;
+      }
+      appendParagraphLines(lines, childNode.innerText || childNode.textContent || '');
+    }
+  }
+
+  function compactStructuredLines(lines) {
+    const output = [];
+    for (const rawLine of lines) {
+      const line = String(rawLine || '').replace(/\u00a0/g, ' ').replace(/[ \t]+$/g, '');
+      if (!line.trim()) {
+        if (output.length === 0 || output[output.length - 1] === '') continue;
+        output.push('');
+        continue;
+      }
+      output.push(line);
+    }
+
+    while (output.length > 0 && output[output.length - 1] === '') {
+      output.pop();
+    }
+    return output.join('\n');
+  }
+
+  function escapeRegex(source) {
+    return String(source || '').replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  }
+
+  function buildFlexibleHeadingSource(label) {
+    return escapeRegex(String(label || '').trim())
+      .replace(/\\,/g, '\\s*,\\s*')
+      .replace(/\s+/g, '\\s+');
+  }
+
+  const SECTION_HEADING_SOURCES = SECTION_HEADING_LABELS.map((label) => buildFlexibleHeadingSource(label));
+  const AGGRESSIVE_SECTION_HEADING_SOURCES = SECTION_HEADING_LABELS
+    .filter((label) => /[\s,]/.test(label))
+    .map((label) => buildFlexibleHeadingSource(label));
+
+  function normalizeSentenceSpacing(text) {
+    return String(text || '')
+      .replace(/\u00a0/g, ' ')
+      .replace(/[ \t]+/g, ' ')
+      .replace(/([,;:])([A-Za-z])/g, '$1 $2')
+      .replace(/([.!?;:])([A-Z])/g, '$1 $2')
+      .replace(/\)([A-Za-z])/g, ') $1')
+      .replace(/([A-Z]{3,})([A-Z][a-z])/g, '$1 $2')
+      .replace(/([a-z0-9])([A-Z][a-z])/g, '$1 $2')
+      .replace(/\s{2,}/g, ' ')
+      .trim();
+  }
+
+  function splitIntoSentenceUnits(text) {
+    const normalized = normalizeSentenceSpacing(text);
+    if (!normalized) return [];
+    return normalized
+      .split(/(?<=[.!?])\s+(?=[A-Z0-9(])/g)
+      .map((part) => part.trim())
+      .filter(Boolean);
+  }
+
+  function dedupeAdjacentBlocks(blocks) {
+    const result = [];
+    let lastFingerprint = '';
+    for (const block of blocks) {
+      const normalized = String(block || '').trim();
+      if (!normalized) continue;
+      const fingerprint = normalized
+        .toLowerCase()
+        .replace(/[ \t]+/g, ' ')
+        .replace(/\s*\n\s*/g, '\n');
+      if (fingerprint === lastFingerprint) continue;
+      result.push(normalized);
+      lastFingerprint = fingerprint;
+    }
+    return result;
+  }
+
+  function isHeadingOnlyBlock(text) {
+    const match = matchKnownHeadingAtStart(text);
+    return Boolean(match && !match.remainder);
+  }
+
+  function dedupeAdjacentSections(blocks) {
+    const result = [];
+    let previousHeadingFingerprint = '';
+    let previousBodyFingerprint = '';
+
+    for (let index = 0; index < blocks.length; index += 1) {
+      const current = String(blocks[index] || '').trim();
+      if (!current) continue;
+
+      if (!isHeadingOnlyBlock(current)) {
+        const paragraphFingerprint = current.toLowerCase().replace(/\s+/g, ' ');
+        if (paragraphFingerprint === previousBodyFingerprint && !previousHeadingFingerprint) {
+          continue;
+        }
+        result.push(current);
+        previousHeadingFingerprint = '';
+        previousBodyFingerprint = paragraphFingerprint;
+        continue;
+      }
+
+      const heading = current;
+      const hasBody = index + 1 < blocks.length && !isHeadingOnlyBlock(blocks[index + 1]);
+      const body = hasBody ? String(blocks[index + 1] || '').trim() : '';
+      const headingFingerprint = heading.toLowerCase().replace(/\s+/g, ' ');
+      const bodyFingerprint = body.toLowerCase().replace(/\s+/g, ' ');
+
+      if (headingFingerprint === previousHeadingFingerprint && bodyFingerprint === previousBodyFingerprint) {
+        if (hasBody) index += 1;
+        continue;
+      }
+
+      result.push(heading);
+      if (hasBody) {
+        result.push(body);
+        index += 1;
+      }
+      previousHeadingFingerprint = headingFingerprint;
+      previousBodyFingerprint = bodyFingerprint;
+    }
+
+    return result;
+  }
+
+  function matchKnownHeadingAtStart(text) {
+    const value = String(text || '').trim();
+    if (!value) return null;
+
+    for (let index = 0; index < SECTION_HEADING_LABELS.length; index += 1) {
+      const source = SECTION_HEADING_SOURCES[index];
+      const regex = new RegExp(`^(${source})(?=\\s|:|$)`, 'i');
+      const match = value.match(regex);
+      if (match) {
+        return {
+          heading: match[0].trim(),
+          remainder: value.slice(match[0].length).replace(/^[:\s-]+/, '').trim()
+        };
+      }
+    }
+
+    const genericHeadingMatch = value.match(/^([A-Z][A-Za-z0-9&/,'’()\- ]{2,80})(?=:\s+)/);
+    if (genericHeadingMatch) {
+      const heading = genericHeadingMatch[1].trim();
+      return {
+        heading,
+        remainder: value.slice(genericHeadingMatch[0].length).replace(/^[:\s-]+/, '').trim()
+      };
+    }
+    return null;
+  }
+
+  function isListStyleHeading(heading) {
+    const normalized = String(heading || '').toLowerCase();
+    return /(responsibilit|qualification|requirement|skill|offer|benefit|expect|process|shift|pay|details|ability|statement)/.test(normalized);
+  }
+
+  function splitListLikeSentenceFragments(sentence) {
+    const normalized = normalizeSentenceSpacing(sentence);
+    if (!normalized) return [];
+
+    const fragments = normalized
+      .replace(/\)\s+(?=[A-Z][a-z])/g, ')\n')
+      .replace(/\b(preferred|required)\s+(?=[A-Z][a-z])/gi, '$1\n')
+      .replace(/\s+(?=(Good|Basic|Strong|Excellent|Proven|Ability|Knowledge|Experience|Familiarity|Understanding)\b)/g, '\n')
+      .split('\n')
+      .map((part) => part.trim())
+      .filter(Boolean);
+
+    return fragments.length > 0 ? fragments : [normalized];
+  }
+
+  function formatBodyText(bodyText, heading) {
+    const normalizedBody = normalizeSentenceSpacing(bodyText);
+    if (!normalizedBody) return '';
+
+    const bulletItems = normalizedBody
+      .replace(/\s*[•▪◦]\s*/g, '\n')
+      .split('\n')
+      .map((segment) => segment.trim())
+      .filter(Boolean);
+
+    if (bulletItems.length > 1) {
+      return bulletItems.map((segment) => `- ${segment}`).join('\n');
+    }
+
+    const sentences = splitIntoSentenceUnits(normalizedBody);
+    if (isListStyleHeading(heading) && sentences.length >= 1) {
+      const listItems = [];
+      for (const sentence of sentences) {
+        const fragments = sentence.length > 90 ? splitListLikeSentenceFragments(sentence) : [sentence];
+        for (const fragment of fragments) {
+          if (!fragment) continue;
+          const fingerprint = fragment.toLowerCase().replace(/\s+/g, ' ');
+          const previous = listItems[listItems.length - 1];
+          const previousFingerprint = previous ? previous.toLowerCase().replace(/\s+/g, ' ') : '';
+          if (fingerprint && fingerprint === previousFingerprint) continue;
+          listItems.push(fragment);
+        }
+      }
+      if (listItems.length >= 2) {
+        return listItems.map((item) => `- ${item}`).join('\n');
+      }
+    }
+    if (sentences.length >= 4 && normalizedBody.length > 280) {
+      return sentences.join('\n');
+    }
+    return normalizedBody;
+  }
+
+  function postProcessDescriptionText(rawText) {
+    if (!rawText || rawText === 'Job description not found') {
+      return 'Job description not found';
+    }
+
+    let text = String(rawText)
+      .replace(/\u00a0/g, ' ')
+      .replace(/\r\n/g, '\n')
+      .replace(/[ \t]+\n/g, '\n')
+      .replace(/\n[ \t]+/g, '\n')
+      .replace(/[ \t]{2,}/g, ' ')
+      .replace(/([A-Z]{3,})([A-Z][a-z])/g, '$1 $2')
+      .replace(/\)([A-Za-z])/g, ') $1')
+      .trim();
+
+    const groupedHeadingSources = SECTION_HEADING_SOURCES.join('|');
+    const headingPattern = new RegExp(`(^|[\\n\\r]|[.!?]\\s+)(\\s*(?:${groupedHeadingSources}))(?=\\s|:|$)`, 'gi');
+    text = text.replace(headingPattern, (_match, prefix, heading) => `${prefix}\n\n${heading.trim()}`);
+
+    if (AGGRESSIVE_SECTION_HEADING_SOURCES.length > 0) {
+      const groupedAggressiveSources = AGGRESSIVE_SECTION_HEADING_SOURCES.join('|');
+      const softHeadingPattern = new RegExp(`\\s+((?:${groupedAggressiveSources}))(?=\\s|:|$)`, 'gi');
+      text = text.replace(softHeadingPattern, (_match, heading) => `\n\n${heading.trim()}`);
+    }
+
+    text = text
+      .replace(/([A-Z][A-Za-z0-9&/,'’()\- ]{2,80}):\s+/g, '\n\n$1:\n')
+      .replace(/\n{3,}/g, '\n\n')
+      .trim();
+
+    const candidateBlocks = text
+      .split(/\n{2,}/)
+      .map((block) => block.trim())
+      .filter(Boolean);
+
+    const finalBlocks = [];
+    for (const block of candidateBlocks) {
+      const headingMatch = matchKnownHeadingAtStart(block);
+      if (headingMatch) {
+        finalBlocks.push(headingMatch.heading);
+        const body = formatBodyText(headingMatch.remainder, headingMatch.heading);
+        if (body) finalBlocks.push(body);
+        continue;
+      }
+
+      const formatted = formatBodyText(block, '');
+      if (formatted) finalBlocks.push(formatted);
+    }
+
+    const dedupedBlocks = dedupeAdjacentBlocks(finalBlocks);
+    const dedupedSections = dedupeAdjacentSections(dedupedBlocks);
+    if (dedupedSections.length === 0) {
+      return 'Job description not found';
+    }
+    return dedupedSections.join('\n\n');
+  }
+
+  function extractStructuredDescriptionText(descriptionElement) {
+    if (!descriptionElement) return 'Job description not found';
+
+    const clone = buildDescriptionClone(descriptionElement);
+    const lines = [];
+    renderStructuredTextFromContainer(clone, lines);
+    const content = compactStructuredLines(lines);
+    return postProcessDescriptionText(content);
+  }
+
   function extractJobInfo() {
     const jobTitleEl = findElement(SELECTORS.jobTitle);
     const companyNameEl = findElement(SELECTORS.companyName);
@@ -137,7 +638,7 @@
       jobTitle: getTextContent(jobTitleEl) || 'Unknown Position',
       companyName: getTextContent(companyNameEl) || 'Unknown Company',
       location: locationText || 'Unknown Location',
-      jobDescriptionText: getTextContent(jobDescEl) || 'Job description not found'
+      jobDescriptionText: extractStructuredDescriptionText(jobDescEl)
     };
   }
 
@@ -170,6 +671,36 @@
       round3_pass: custom.round3_pass == null ? 0 : custom.round3_pass,
       notes: custom.notes == null ? '' : custom.notes
     };
+  }
+
+  async function buildTrackerDraftForExport(jobInfo) {
+    const fallback = {
+      status: 'Saved',
+      round1_pass: 0,
+      round2_pass: 0,
+      round3_pass: 0,
+      notes: ''
+    };
+
+    try {
+      const existing = await sendRuntimeMessage({
+        type: 'TRACKER_GET_BY_JOB_KEY',
+        jobKey: jobInfo.jobKey
+      });
+      if (existing?.ok && existing.record) {
+        return buildTrackerRecordDraft(jobInfo, {
+          status: existing.record.status || 'Saved',
+          round1_pass: existing.record.round1_pass,
+          round2_pass: existing.record.round2_pass,
+          round3_pass: existing.record.round3_pass,
+          notes: existing.record.notes || ''
+        });
+      }
+    } catch (_error) {
+      // Ignore pre-read failure and fall back to default draft.
+    }
+
+    return buildTrackerRecordDraft(jobInfo, fallback);
   }
 
   function generateFilename(companyName, jobTitle, location) {
@@ -392,13 +923,7 @@
   }
 
   async function trackAfterExport(jobInfo) {
-    const recordDraft = buildTrackerRecordDraft(jobInfo, {
-      status: 'Saved',
-      round1_pass: 0,
-      round2_pass: 0,
-      round3_pass: 0,
-      notes: ''
-    });
+    const recordDraft = await buildTrackerDraftForExport(jobInfo);
 
     try {
       const response = await sendRuntimeMessage({
@@ -425,6 +950,7 @@
 
   async function exportToTxt() {
     try {
+      await expandJobDescriptionIfNeeded();
       const jobInfo = getCurrentJobInfo();
       const filename = generateFilename(jobInfo.companyName, jobInfo.jobTitle, jobInfo.location);
       const content = buildTxtContent(jobInfo);
@@ -442,7 +968,9 @@
       if (!trackerResult.ok) {
         const trackerErrorCode = trackerResult.errorCode || 'TRACKER_UPSERT_FAILED';
         const trackerMessage = trackerResult.message || 'Tracker sync failed';
-        console.debug(`[LinkedIn Job Tracker] auto-track skipped: ${trackerErrorCode} ${trackerMessage}`);
+        const syncError = new Error(`TXT 已导出，但 CSV 同步失败：${trackerMessage}`);
+        syncError.errorCode = trackerErrorCode;
+        throw syncError;
       }
 
       return {
@@ -474,7 +1002,13 @@
       if (message.type === 'EXPORT_TXT') {
         exportToTxt()
           .then((result) => sendResponse(result))
-          .catch((error) => sendResponse({ ok: false, message: error?.message || String(error) }));
+          .catch((error) =>
+            sendResponse({
+              ok: false,
+              errorCode: error?.errorCode || error?.code || 'UNKNOWN_ERROR',
+              message: error?.message || String(error)
+            })
+          );
         return true;
       }
 

@@ -544,7 +544,15 @@ async function enqueueWrite(task) {
   return writeQueue;
 }
 
-async function upsertTrackerRecord(recordDraft) {
+function findLatestRecordIndexByJobKey(records, jobKey) {
+  for (let index = records.length - 1; index >= 0; index -= 1) {
+    if (records[index]?.job_key === jobKey) return index;
+  }
+  return -1;
+}
+
+async function upsertTrackerRecordWithMode(recordDraft, options) {
+  const mode = options?.mode === 'append' ? 'append' : 'replace';
   return enqueueWrite(async () => {
     const draft = normalizeDraft(recordDraft);
     const handle = await getStoredHandle();
@@ -554,10 +562,12 @@ async function upsertTrackerRecord(recordDraft) {
 
     const nowIso = new Date().toISOString();
     const records = await readCsvRecords(handle);
-    const existingIndex = records.findIndex((item) => item.job_key === draft.job_key);
+    const existingIndex = findLatestRecordIndexByJobKey(records, draft.job_key);
     const merged = mergeRecord(existingIndex >= 0 ? records[existingIndex] : null, draft, nowIso);
 
-    if (existingIndex >= 0) {
+    if (mode === 'append') {
+      records.push(merged);
+    } else if (existingIndex >= 0) {
       records[existingIndex] = merged;
     } else {
       records.push(merged);
@@ -588,7 +598,8 @@ async function getRecordByJobKey(jobKey) {
   }
 
   const records = await readCsvRecords(handle);
-  return records.find((item) => item.job_key === normalizedKey) || null;
+  const latestIndex = findLatestRecordIndexByJobKey(records, normalizedKey);
+  return latestIndex >= 0 ? records[latestIndex] : null;
 }
 
 async function handleBindCsv(message) {
@@ -678,12 +689,14 @@ async function handleExportTxtToBoundDir(message) {
 }
 
 async function handleUpsert(message) {
-  const record = await upsertTrackerRecord(message?.recordDraft);
+  const mode = 'append';
+  const record = await upsertTrackerRecordWithMode(message?.recordDraft, { mode });
   const syncState = await resolveBindingState();
   return {
     ok: true,
     record,
-    syncState
+    syncState,
+    mode
   };
 }
 

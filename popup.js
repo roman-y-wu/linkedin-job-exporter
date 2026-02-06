@@ -47,6 +47,9 @@ function mapErrorMessage(responseOrError) {
   if (code === 'OUTPUT_WRITE_FAILED') {
     return '写入 TXT 失败，请稍后重试。';
   }
+  if (code === 'TRACKER_UPSERT_FAILED') {
+    return 'TXT 已导出，但 CSV 同步失败，请检查 CSV 绑定与权限。';
+  }
   return responseOrError?.message || '操作失败。';
 }
 
@@ -562,6 +565,11 @@ async function exportTxtFromPopup() {
     throw new Error('请先打开 LinkedIn 职位详情页。');
   }
 
+  if (!currentBindingState?.isBound || currentBindingState?.needsRebind) {
+    throw new Error('CSV 未绑定或需要重新绑定。');
+  }
+
+  await ensureStoredCsvWritePermission();
   await ensureStoredTxtOutputWritePermission();
 
   await ensureScriptInjected(activeTab.id);
@@ -570,12 +578,14 @@ async function exportTxtFromPopup() {
     throw new Error(mapErrorMessage(response));
   }
 
-  await refreshBindingState();
   if (response.trackerResult && response.trackerResult.ok === false) {
-    const trackerErrorCode = response.trackerResult.errorCode || 'TRACKER_UPSERT_FAILED';
-    const trackerMessage = response.trackerResult.message || 'Tracker sync failed';
-    console.debug(`[LinkedIn Job Tracker] popup export tracker sync skipped: ${trackerErrorCode} ${trackerMessage}`);
+    throw createMappedError(
+      response.trackerResult.errorCode || 'TRACKER_UPSERT_FAILED',
+      response.trackerResult.message || 'CSV 同步失败。'
+    );
   }
+
+  await refreshBindingState();
 }
 
 function registerFormPersistenceListeners() {
