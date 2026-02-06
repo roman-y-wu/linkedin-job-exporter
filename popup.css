@@ -139,6 +139,10 @@ button.secondary:hover {
   background: #444c56;
 }
 
+#bind-txt-output-btn {
+  width: 100%;
+}
+
 .hint {
   margin: 0;
   font-size: 11px;

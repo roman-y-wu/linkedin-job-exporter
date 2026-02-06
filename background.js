@@ -1,13 +1,15 @@
 importScripts('lib/tracker_csv.js');
 
 const STORAGE_KEYS = {
-  BINDING_META: 'trackerBindingMeta'
+  BINDING_META: 'trackerBindingMeta',
+  TXT_OUTPUT_BINDING_META: 'txtOutputBindingMeta'
 };
 
 const IDB_CONFIG = {
   DB_NAME: 'linkedinJobTrackerDB',
   STORE_NAME: 'handles',
-  HANDLE_KEY: 'trackerCsvHandle'
+  HANDLE_KEY: 'trackerCsvHandle',
+  TXT_OUTPUT_DIR_HANDLE_KEY: 'txtOutputDirHandle'
 };
 
 const ERROR_CODES = {
@@ -15,6 +17,10 @@ const ERROR_CODES = {
   PERMISSION_DENIED: 'PERMISSION_DENIED',
   FILE_NOT_FOUND: 'FILE_NOT_FOUND',
   SCHEMA_MISMATCH: 'SCHEMA_MISMATCH',
+  NO_OUTPUT_DIR_BOUND: 'NO_OUTPUT_DIR_BOUND',
+  OUTPUT_DIR_PERMISSION_DENIED: 'OUTPUT_DIR_PERMISSION_DENIED',
+  OUTPUT_DIR_NOT_FOUND: 'OUTPUT_DIR_NOT_FOUND',
+  OUTPUT_WRITE_FAILED: 'OUTPUT_WRITE_FAILED',
   INVALID_INPUT: 'INVALID_INPUT',
   UNKNOWN_ERROR: 'UNKNOWN_ERROR'
 };
@@ -27,12 +33,20 @@ const STATUS_TO_DATE_FIELD = {
   Ghosted: 'ghosted_at'
 };
 
-const NEEDS_REBIND_CODES = new Set([
+const TRACKER_NEEDS_REBIND_CODES = new Set([
   ERROR_CODES.NO_BOUND_FILE,
   ERROR_CODES.PERMISSION_DENIED,
   ERROR_CODES.FILE_NOT_FOUND,
   ERROR_CODES.SCHEMA_MISMATCH
 ]);
+
+const TXT_OUTPUT_NEEDS_REBIND_CODES = new Set([
+  ERROR_CODES.NO_OUTPUT_DIR_BOUND,
+  ERROR_CODES.OUTPUT_DIR_PERMISSION_DENIED,
+  ERROR_CODES.OUTPUT_DIR_NOT_FOUND
+]);
+
+const NEEDS_REBIND_CODES = new Set([...TRACKER_NEEDS_REBIND_CODES, ...TXT_OUTPUT_NEEDS_REBIND_CODES]);
 
 let dbPromise = null;
 let writeQueue = Promise.resolve();
@@ -52,6 +66,17 @@ function getDefaultBindingMeta() {
     fileName: '',
     boundAt: null,
     lastSyncAt: null,
+    lastError: null,
+    needsRebind: false
+  };
+}
+
+function getDefaultTxtOutputBindingMeta() {
+  return {
+    isBound: false,
+    directoryName: '',
+    boundAt: null,
+    lastWriteAt: null,
     lastError: null,
     needsRebind: false
   };
@@ -95,6 +120,28 @@ async function setStoredHandle(handle) {
   });
 }
 
+async function getStoredTxtOutputDirHandle() {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(IDB_CONFIG.STORE_NAME, 'readonly');
+    const store = transaction.objectStore(IDB_CONFIG.STORE_NAME);
+    const request = store.get(IDB_CONFIG.TXT_OUTPUT_DIR_HANDLE_KEY);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function setStoredTxtOutputDirHandle(handle) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(IDB_CONFIG.STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(IDB_CONFIG.STORE_NAME);
+    const request = store.put(handle, IDB_CONFIG.TXT_OUTPUT_DIR_HANDLE_KEY);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
 async function getBindingMeta() {
   const result = await chrome.storage.local.get(STORAGE_KEYS.BINDING_META);
   const meta = result?.[STORAGE_KEYS.BINDING_META];
@@ -105,6 +152,19 @@ async function updateBindingMeta(patch) {
   const current = await getBindingMeta();
   const next = { ...current, ...patch };
   await chrome.storage.local.set({ [STORAGE_KEYS.BINDING_META]: next });
+  return next;
+}
+
+async function getTxtOutputBindingMeta() {
+  const result = await chrome.storage.local.get(STORAGE_KEYS.TXT_OUTPUT_BINDING_META);
+  const meta = result?.[STORAGE_KEYS.TXT_OUTPUT_BINDING_META];
+  return { ...getDefaultTxtOutputBindingMeta(), ...(meta || {}) };
+}
+
+async function updateTxtOutputBindingMeta(patch) {
+  const current = await getTxtOutputBindingMeta();
+  const next = { ...current, ...patch };
+  await chrome.storage.local.set({ [STORAGE_KEYS.TXT_OUTPUT_BINDING_META]: next });
   return next;
 }
 
@@ -133,12 +193,12 @@ function toErrorPayload(error) {
   return {
     ok: false,
     errorCode,
-    message: error?.message || 'Unknown tracker error',
+    message: error?.message || 'Unknown extension error',
     needsRebind: NEEDS_REBIND_CODES.has(errorCode)
   };
 }
 
-async function applyErrorState(errorPayload) {
+async function applyTrackerErrorState(errorPayload) {
   const patch = {
     lastError: errorPayload.errorCode || ERROR_CODES.UNKNOWN_ERROR
   };
@@ -148,13 +208,23 @@ async function applyErrorState(errorPayload) {
   await updateBindingMeta(patch);
 }
 
-async function queryWritePermission(handle) {
-  if (!handle || typeof handle.queryPermission !== 'function') {
-    throw makeError(ERROR_CODES.PERMISSION_DENIED, 'File handle is not available.');
+async function applyTxtOutputErrorState(errorPayload) {
+  const patch = {
+    lastError: errorPayload.errorCode || ERROR_CODES.UNKNOWN_ERROR
+  };
+  if (errorPayload.needsRebind) {
+    patch.needsRebind = true;
   }
-  const permission = await handle.queryPermission({ mode: 'readwrite' });
-  if (permission !== 'granted') {
-    throw makeError(ERROR_CODES.PERMISSION_DENIED, 'Read/write permission is not granted for the bound CSV file.');
+  await updateTxtOutputBindingMeta(patch);
+}
+
+async function applyErrorStateByMessageType(messageType, errorPayload) {
+  if (String(messageType || '').startsWith('TRACKER_')) {
+    await applyTrackerErrorState(errorPayload);
+    return;
+  }
+  if (String(messageType || '').startsWith('TXT_')) {
+    await applyTxtOutputErrorState(errorPayload);
   }
 }
 
@@ -170,12 +240,8 @@ async function resolveBindingState() {
   if (handle && typeof handle.queryPermission === 'function') {
     try {
       permission = await handle.queryPermission({ mode: 'readwrite' });
-      if (permission !== 'granted') {
-        needsRebind = true;
-      }
     } catch (_error) {
       permission = 'unknown';
-      needsRebind = true;
     }
   } else if (meta.isBound) {
     needsRebind = true;
@@ -185,7 +251,7 @@ async function resolveBindingState() {
     needsRebind = true;
   }
 
-  if (meta.lastError && NEEDS_REBIND_CODES.has(meta.lastError)) {
+  if (meta.lastError && TRACKER_NEEDS_REBIND_CODES.has(meta.lastError)) {
     needsRebind = true;
   }
 
@@ -198,6 +264,48 @@ async function resolveBindingState() {
     fileName,
     boundAt: meta.boundAt,
     lastSyncAt: meta.lastSyncAt,
+    lastError: meta.lastError,
+    needsRebind,
+    permission
+  };
+}
+
+async function resolveTxtOutputState() {
+  const meta = await getTxtOutputBindingMeta();
+  const handle = await getStoredTxtOutputDirHandle();
+
+  let permission = 'unavailable';
+  let needsRebind = Boolean(meta.needsRebind);
+  let isBound = Boolean(handle);
+  const directoryName = meta.directoryName || (handle?.name || '');
+
+  if (handle && typeof handle.queryPermission === 'function') {
+    try {
+      permission = await handle.queryPermission({ mode: 'readwrite' });
+    } catch (_error) {
+      permission = 'unknown';
+    }
+  } else if (meta.isBound) {
+    needsRebind = true;
+  }
+
+  if (!handle && meta.isBound) {
+    needsRebind = true;
+  }
+
+  if (meta.lastError && TXT_OUTPUT_NEEDS_REBIND_CODES.has(meta.lastError)) {
+    needsRebind = true;
+  }
+
+  if (!handle) {
+    isBound = false;
+  }
+
+  return {
+    isBound,
+    directoryName,
+    boundAt: meta.boundAt,
+    lastWriteAt: meta.lastWriteAt,
     lastError: meta.lastError,
     needsRebind,
     permission
@@ -221,7 +329,13 @@ async function readCsvRecords(handle) {
   try {
     file = await handle.getFile();
   } catch (error) {
-    throw makeError(ERROR_CODES.FILE_NOT_FOUND, 'The bound CSV file can no longer be found.', error);
+    if (error?.name === 'NotFoundError') {
+      throw makeError(ERROR_CODES.FILE_NOT_FOUND, 'The bound CSV file can no longer be found.', error);
+    }
+    if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') {
+      throw makeError(ERROR_CODES.PERMISSION_DENIED, 'Read/write permission is not granted for the bound CSV file.', error);
+    }
+    throw error;
   }
 
   const rawText = await file.text();
@@ -242,18 +356,42 @@ async function readCsvRecords(handle) {
 
 async function writeCsvRecords(handle, records) {
   const text = TrackerCsv.serializeObjects(records, TrackerCsv.CSV_HEADERS, true);
-  const writable = await handle.createWritable();
-  await writable.write(text);
-  await writable.close();
+  let writable = null;
+  try {
+    writable = await handle.createWritable();
+    await writable.write(text);
+    await writable.close();
+  } catch (error) {
+    if (writable && typeof writable.abort === 'function') {
+      try {
+        await writable.abort();
+      } catch (_abortError) {
+        // Ignore cleanup errors.
+      }
+    }
+
+    if (error?.name === 'NotFoundError') {
+      throw makeError(ERROR_CODES.FILE_NOT_FOUND, 'The bound CSV file can no longer be found.', error);
+    }
+    if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') {
+      throw makeError(ERROR_CODES.PERMISSION_DENIED, 'Read/write permission is not granted for the bound CSV file.', error);
+    }
+    throw error;
+  }
 }
 
 async function validateOrInitializeCsv(handle) {
-  await queryWritePermission(handle);
   let file;
   try {
     file = await handle.getFile();
   } catch (error) {
-    throw makeError(ERROR_CODES.FILE_NOT_FOUND, 'The selected CSV file cannot be read.', error);
+    if (error?.name === 'NotFoundError') {
+      throw makeError(ERROR_CODES.FILE_NOT_FOUND, 'The selected CSV file cannot be read.', error);
+    }
+    if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') {
+      throw makeError(ERROR_CODES.PERMISSION_DENIED, 'Read/write permission is not granted for the selected CSV file.', error);
+    }
+    throw error;
   }
 
   const text = await file.text();
@@ -266,6 +404,82 @@ async function validateOrInitializeCsv(handle) {
   if (!TrackerCsv.isHeaderMatch(parsed.headers)) {
     throw makeError(ERROR_CODES.SCHEMA_MISMATCH, 'CSV header mismatch. Please use the standard template.');
   }
+}
+
+function normalizeTxtBaseName(input) {
+  const candidate = String(input || '').trim().replace(/\.txt$/i, '');
+  if (!candidate) {
+    throw makeError(ERROR_CODES.INVALID_INPUT, 'fileBaseName is required.');
+  }
+  return candidate;
+}
+
+async function fileExistsInDirectory(directoryHandle, fileName) {
+  try {
+    await directoryHandle.getFileHandle(fileName, { create: false });
+    return true;
+  } catch (error) {
+    if (error?.name === 'NotFoundError') {
+      return false;
+    }
+    throw error;
+  }
+}
+
+async function resolveUniqueTxtFileName(directoryHandle, fileBaseName) {
+  let index = 0;
+  while (index < 10000) {
+    const suffix = index === 0 ? '' : `_${index}`;
+    const candidate = `${fileBaseName}${suffix}.txt`;
+    const exists = await fileExistsInDirectory(directoryHandle, candidate);
+    if (!exists) return candidate;
+    index += 1;
+  }
+  throw makeError(ERROR_CODES.OUTPUT_WRITE_FAILED, 'Could not resolve a unique file name in output directory.');
+}
+
+async function writeTxtToBoundDirectory(input) {
+  const directoryHandle = await getStoredTxtOutputDirHandle();
+  if (!directoryHandle) {
+    throw makeError(ERROR_CODES.NO_OUTPUT_DIR_BOUND, 'No output directory is currently bound.');
+  }
+
+  const fileBaseName = normalizeTxtBaseName(input?.fileBaseName);
+  const content = String(input?.content ?? '');
+
+  let targetFileName;
+  try {
+    targetFileName = await resolveUniqueTxtFileName(directoryHandle, fileBaseName);
+    const fileHandle = await directoryHandle.getFileHandle(targetFileName, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(content);
+    await writable.close();
+  } catch (error) {
+    if (error?.code) {
+      throw error;
+    }
+    if (error?.name === 'NotAllowedError' || error?.name === 'SecurityError') {
+      throw makeError(ERROR_CODES.OUTPUT_DIR_PERMISSION_DENIED, 'Output directory write permission is denied.', error);
+    }
+    if (error?.name === 'NotFoundError') {
+      throw makeError(ERROR_CODES.OUTPUT_DIR_NOT_FOUND, 'The bound output directory is no longer available.', error);
+    }
+    throw makeError(ERROR_CODES.OUTPUT_WRITE_FAILED, 'Failed to write TXT file to output directory.', error);
+  }
+
+  const writtenAt = new Date().toISOString();
+  await updateTxtOutputBindingMeta({
+    isBound: true,
+    directoryName: directoryHandle.name || '',
+    lastWriteAt: writtenAt,
+    needsRebind: false,
+    lastError: null
+  });
+
+  return {
+    writtenFileName: targetFileName,
+    writtenAt
+  };
 }
 
 function normalizeDraft(recordDraft) {
@@ -338,7 +552,6 @@ async function upsertTrackerRecord(recordDraft) {
       throw makeError(ERROR_CODES.NO_BOUND_FILE, 'No CSV file is currently bound.');
     }
 
-    await queryWritePermission(handle);
     const nowIso = new Date().toISOString();
     const records = await readCsvRecords(handle);
     const existingIndex = records.findIndex((item) => item.job_key === draft.job_key);
@@ -374,7 +587,6 @@ async function getRecordByJobKey(jobKey) {
     return null;
   }
 
-  await queryWritePermission(handle);
   const records = await readCsvRecords(handle);
   return records.find((item) => item.job_key === normalizedKey) || null;
 }
@@ -416,6 +628,55 @@ async function handleGetBindingState() {
   };
 }
 
+async function handleBindTxtOutputDir(message) {
+  if (message?.directoryHandle) {
+    await setStoredTxtOutputDirHandle(message.directoryHandle);
+  }
+
+  const directoryHandle = await getStoredTxtOutputDirHandle();
+  if (!directoryHandle) {
+    throw makeError(ERROR_CODES.NO_OUTPUT_DIR_BOUND, 'No output directory handle is available.');
+  }
+
+  const boundAt = message?.boundAt || new Date().toISOString();
+  const directoryName = message?.directoryName || directoryHandle.name || 'LinkedIn Exports';
+
+  await updateTxtOutputBindingMeta({
+    isBound: true,
+    directoryName,
+    boundAt,
+    needsRebind: false,
+    lastError: null
+  });
+
+  return {
+    ok: true,
+    directoryName,
+    boundAt
+  };
+}
+
+async function handleGetTxtOutputState() {
+  const state = await resolveTxtOutputState();
+  return {
+    ok: true,
+    ...state
+  };
+}
+
+async function handleExportTxtToBoundDir(message) {
+  const result = await writeTxtToBoundDirectory({
+    fileBaseName: message?.fileBaseName,
+    content: message?.content
+  });
+  const outputState = await resolveTxtOutputState();
+  return {
+    ok: true,
+    ...result,
+    outputState
+  };
+}
+
 async function handleUpsert(message) {
   const record = await upsertTrackerRecord(message?.recordDraft);
   const syncState = await resolveBindingState();
@@ -446,6 +707,12 @@ async function dispatchMessage(message) {
       return handleUpsert(message);
     case 'TRACKER_GET_BY_JOB_KEY':
       return handleGetByJobKey(message);
+    case 'TXT_BIND_OUTPUT_DIR':
+      return handleBindTxtOutputDir(message);
+    case 'TXT_GET_OUTPUT_STATE':
+      return handleGetTxtOutputState();
+    case 'TXT_EXPORT_TO_BOUND_DIR':
+      return handleExportTxtToBoundDir(message);
     default:
       return null;
   }
@@ -453,7 +720,8 @@ async function dispatchMessage(message) {
 
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || !message.type) return undefined;
-  if (!String(message.type).startsWith('TRACKER_')) return undefined;
+  const messageType = String(message.type);
+  if (!messageType.startsWith('TRACKER_') && !messageType.startsWith('TXT_')) return undefined;
 
   (async () => {
     try {
@@ -461,7 +729,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse(response);
     } catch (error) {
       const payload = toErrorPayload(error);
-      await applyErrorState(payload);
+      await applyErrorStateByMessageType(messageType, payload);
       sendResponse(payload);
     }
   })();

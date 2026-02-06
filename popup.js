@@ -1,7 +1,8 @@
 const IDB_CONFIG = {
   DB_NAME: 'linkedinJobTrackerDB',
   STORE_NAME: 'handles',
-  HANDLE_KEY: 'trackerCsvHandle'
+  HANDLE_KEY: 'trackerCsvHandle',
+  TXT_OUTPUT_DIR_HANDLE_KEY: 'txtOutputDirHandle'
 };
 
 const PENDING_DRAFT_KEY = 'trackerPendingDraft';
@@ -9,6 +10,7 @@ const PENDING_DRAFT_KEY = 'trackerPendingDraft';
 let activeTab = null;
 let currentJobInfo = null;
 let currentBindingState = null;
+let currentOutputBindingState = null;
 let dbPromise = null;
 
 function setStatus(message, type) {
@@ -32,6 +34,18 @@ function mapErrorMessage(responseOrError) {
   }
   if (code === 'NO_BOUND_FILE') {
     return '尚未绑定 CSV 文件。';
+  }
+  if (code === 'NO_OUTPUT_DIR_BOUND') {
+    return '尚未设置 TXT 保存文件夹，请先绑定。';
+  }
+  if (code === 'OUTPUT_DIR_PERMISSION_DENIED') {
+    return 'TXT 保存文件夹权限不足，请重新设置。';
+  }
+  if (code === 'OUTPUT_DIR_NOT_FOUND') {
+    return 'TXT 保存文件夹不可用，请重新设置。';
+  }
+  if (code === 'OUTPUT_WRITE_FAILED') {
+    return '写入 TXT 失败，请稍后重试。';
   }
   return responseOrError?.message || '操作失败。';
 }
@@ -109,18 +123,122 @@ async function setStoredHandle(handle) {
   });
 }
 
-async function ensureHandlePermission(handle) {
+async function getStoredHandle() {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(IDB_CONFIG.STORE_NAME, 'readonly');
+    const store = transaction.objectStore(IDB_CONFIG.STORE_NAME);
+    const request = store.get(IDB_CONFIG.HANDLE_KEY);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function setStoredTxtOutputDirHandle(handle) {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(IDB_CONFIG.STORE_NAME, 'readwrite');
+    const store = transaction.objectStore(IDB_CONFIG.STORE_NAME);
+    const request = store.put(handle, IDB_CONFIG.TXT_OUTPUT_DIR_HANDLE_KEY);
+    request.onsuccess = () => resolve();
+    request.onerror = () => reject(request.error);
+  });
+}
+
+async function getStoredTxtOutputDirHandle() {
+  const db = await openDb();
+  return new Promise((resolve, reject) => {
+    const transaction = db.transaction(IDB_CONFIG.STORE_NAME, 'readonly');
+    const store = transaction.objectStore(IDB_CONFIG.STORE_NAME);
+    const request = store.get(IDB_CONFIG.TXT_OUTPUT_DIR_HANDLE_KEY);
+    request.onsuccess = () => resolve(request.result || null);
+    request.onerror = () => reject(request.error);
+  });
+}
+
+function createMappedError(errorCode, message, cause) {
+  const error = new Error(message);
+  error.errorCode = errorCode;
+  if (cause) {
+    error.cause = cause;
+  }
+  return error;
+}
+
+async function ensureHandlePermission(handle, permissionLabel = '文件') {
   let permission = await handle.queryPermission({ mode: 'readwrite' });
   if (permission !== 'granted') {
     permission = await handle.requestPermission({ mode: 'readwrite' });
   }
   if (permission !== 'granted') {
-    throw new Error('未授予 CSV 读写权限。');
+    throw new Error(`未授予${permissionLabel}读写权限。`);
   }
 }
 
+async function ensureStoredHandlePermission(handle, options) {
+  const permissionDeniedCode = options.permissionDeniedCode;
+  const notFoundCode = options.notFoundCode;
+  const notFoundMessage = options.notFoundMessage;
+  if (!handle || typeof handle.queryPermission !== 'function') {
+    throw createMappedError(permissionDeniedCode, options.unavailableMessage);
+  }
+
+  let permission = 'prompt';
+  try {
+    permission = await handle.queryPermission({ mode: 'readwrite' });
+  } catch (error) {
+    if (error?.name === 'NotFoundError' && notFoundCode) {
+      throw createMappedError(notFoundCode, notFoundMessage, error);
+    }
+    throw createMappedError(permissionDeniedCode, options.deniedMessage, error);
+  }
+
+  if (permission !== 'granted') {
+    try {
+      permission = await handle.requestPermission({ mode: 'readwrite' });
+    } catch (error) {
+      if (error?.name === 'NotFoundError' && notFoundCode) {
+        throw createMappedError(notFoundCode, notFoundMessage, error);
+      }
+      throw createMappedError(permissionDeniedCode, options.deniedMessage, error);
+    }
+  }
+
+  if (permission !== 'granted') {
+    throw createMappedError(permissionDeniedCode, options.deniedMessage);
+  }
+}
+
+async function ensureStoredCsvWritePermission() {
+  const handle = await getStoredHandle();
+  if (!handle) {
+    throw createMappedError('NO_BOUND_FILE', '尚未绑定 CSV 文件。');
+  }
+  await ensureStoredHandlePermission(handle, {
+    permissionDeniedCode: 'PERMISSION_DENIED',
+    notFoundCode: 'FILE_NOT_FOUND',
+    unavailableMessage: 'CSV 文件句柄不可用，请重新绑定。',
+    deniedMessage: 'CSV 文件读写权限不足，请重新绑定。',
+    notFoundMessage: '绑定的 CSV 文件找不到，请重新绑定。'
+  });
+}
+
+async function ensureStoredTxtOutputWritePermission() {
+  const handle = await getStoredTxtOutputDirHandle();
+  if (!handle) {
+    throw createMappedError('NO_OUTPUT_DIR_BOUND', '尚未设置 TXT 保存文件夹。');
+  }
+  await ensureStoredHandlePermission(handle, {
+    permissionDeniedCode: 'OUTPUT_DIR_PERMISSION_DENIED',
+    notFoundCode: 'OUTPUT_DIR_NOT_FOUND',
+    unavailableMessage: 'TXT 保存文件夹句柄不可用，请重新设置。',
+    deniedMessage: 'TXT 保存文件夹权限不足，请重新设置。',
+    notFoundMessage: 'TXT 保存文件夹不可用，请重新设置。'
+  });
+}
+
 function setTrackingEnabled(enabled) {
-  const ids = ['status-select', 'round1-pass', 'round2-pass', 'round3-pass', 'notes-input', 'save-track-btn', 'export-btn', 'inject-btn'];
+  const ids = ['status-select', 'round1-pass', 'round2-pass', 'round3-pass', 'notes-input', 'save-track-btn', 'export-btn'];
   for (const id of ids) {
     const element = document.getElementById(id);
     if (element) {
@@ -213,6 +331,26 @@ function updateBindingUi(state) {
   detail.textContent = parts.join(' | ');
 }
 
+function updateTxtOutputBindingUi(state) {
+  const summary = document.getElementById('txt-output-summary');
+  const detail = document.getElementById('txt-output-detail');
+  if (!summary || !detail) return;
+
+  if (!state?.isBound) {
+    summary.textContent = '未绑定 TXT 保存文件夹';
+    detail.textContent = state?.lastError ? `错误: ${state.lastError}` : '请先设置 TXT 保存文件夹。';
+    return;
+  }
+
+  summary.textContent = `已绑定: ${state.directoryName || '输出文件夹'}`;
+  const parts = [];
+  if (state.boundAt) parts.push(`Bound: ${new Date(state.boundAt).toLocaleString()}`);
+  if (state.lastWriteAt) parts.push(`Last Write: ${new Date(state.lastWriteAt).toLocaleString()}`);
+  if (state.needsRebind) parts.push('需要重新绑定');
+  if (state.lastError) parts.push(`Error: ${state.lastError}`);
+  detail.textContent = parts.join(' | ');
+}
+
 async function refreshBindingState() {
   try {
     const response = await sendRuntimeMessage({ type: 'TRACKER_GET_BINDING_STATE' });
@@ -224,6 +362,21 @@ async function refreshBindingState() {
     return response;
   } catch (error) {
     setStatus(error.message || '获取绑定状态失败。', 'error');
+    return null;
+  }
+}
+
+async function refreshOutputBindingState() {
+  try {
+    const response = await sendRuntimeMessage({ type: 'TXT_GET_OUTPUT_STATE' });
+    if (!response?.ok) {
+      throw new Error(mapErrorMessage(response));
+    }
+    currentOutputBindingState = response;
+    updateTxtOutputBindingUi(response);
+    return response;
+  } catch (error) {
+    setStatus(error.message || '获取 TXT 输出目录状态失败。', 'error');
     return null;
   }
 }
@@ -283,6 +436,24 @@ async function createTemplateCsvAndBind() {
   const response = await sendRuntimeMessage({
     type: 'TRACKER_BIND_CSV',
     fileName: handle.name,
+    boundAt: new Date().toISOString()
+  });
+  if (!response?.ok) {
+    throw new Error(mapErrorMessage(response));
+  }
+}
+
+async function bindTxtOutputDirectory() {
+  if (!window.showDirectoryPicker) {
+    throw new Error('当前环境不支持目录选择器。');
+  }
+
+  const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+  await ensureHandlePermission(handle, 'TXT 保存文件夹');
+  await setStoredTxtOutputDirHandle(handle);
+  const response = await sendRuntimeMessage({
+    type: 'TXT_BIND_OUTPUT_DIR',
+    directoryName: handle.name,
     boundAt: new Date().toISOString()
   });
   if (!response?.ok) {
@@ -355,6 +526,8 @@ async function saveTracking() {
     throw new Error('CSV 未绑定或需要重新绑定。');
   }
 
+  await ensureStoredCsvWritePermission();
+
   const form = readFormState();
   const payload = {
     job_key: currentJobInfo.jobKey,
@@ -389,6 +562,8 @@ async function exportTxtFromPopup() {
     throw new Error('请先打开 LinkedIn 职位详情页。');
   }
 
+  await ensureStoredTxtOutputWritePermission();
+
   await ensureScriptInjected(activeTab.id);
   const response = await sendTabMessage(activeTab.id, { type: 'EXPORT_TXT' });
   if (!response?.ok) {
@@ -397,19 +572,9 @@ async function exportTxtFromPopup() {
 
   await refreshBindingState();
   if (response.trackerResult && response.trackerResult.ok === false) {
-    throw new Error(mapErrorMessage(response.trackerResult));
-  }
-}
-
-async function injectButtonsFromPopup() {
-  if (!activeTab?.id || !isLinkedInJobsPage(activeTab?.url)) {
-    throw new Error('请先打开 LinkedIn 职位详情页。');
-  }
-
-  await ensureScriptInjected(activeTab.id);
-  const response = await sendTabMessage(activeTab.id, { type: 'INJECT_BUTTON' });
-  if (!response?.ok) {
-    throw new Error('按钮注入失败。');
+    const trackerErrorCode = response.trackerResult.errorCode || 'TRACKER_UPSERT_FAILED';
+    const trackerMessage = response.trackerResult.message || 'Tracker sync failed';
+    console.debug(`[LinkedIn Job Tracker] popup export tracker sync skipped: ${trackerErrorCode} ${trackerMessage}`);
   }
 }
 
@@ -433,9 +598,9 @@ function registerFormPersistenceListeners() {
 document.addEventListener('DOMContentLoaded', async () => {
   const bindExistingButton = document.getElementById('bind-existing-btn');
   const createTemplateButton = document.getElementById('create-template-btn');
+  const bindTxtOutputButton = document.getElementById('bind-txt-output-btn');
   const saveTrackButton = document.getElementById('save-track-btn');
   const exportButton = document.getElementById('export-btn');
-  const injectButton = document.getElementById('inject-btn');
 
   registerFormPersistenceListeners();
 
@@ -446,7 +611,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       setStatus('CSV 绑定成功。', 'success');
       await loadRecordIntoForm();
     })().catch((error) => {
-      setStatus(error.message || 'CSV 绑定失败。', 'error');
+      setStatus(mapErrorMessage(error) || 'CSV 绑定失败。', 'error');
     });
   });
 
@@ -457,7 +622,17 @@ document.addEventListener('DOMContentLoaded', async () => {
       setStatus('模板 CSV 已创建并绑定。', 'success');
       await loadRecordIntoForm();
     })().catch((error) => {
-      setStatus(error.message || '模板创建失败。', 'error');
+      setStatus(mapErrorMessage(error) || '模板创建失败。', 'error');
+    });
+  });
+
+  bindTxtOutputButton.addEventListener('click', () => {
+    withLoading(bindTxtOutputButton, '设置中...', async () => {
+      await bindTxtOutputDirectory();
+      await refreshOutputBindingState();
+      setStatus('TXT 保存文件夹设置成功。', 'success');
+    })().catch((error) => {
+      setStatus(mapErrorMessage(error) || 'TXT 保存文件夹设置失败。', 'error');
     });
   });
 
@@ -466,7 +641,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       await saveTracking();
       setStatus('追踪记录已保存。', 'success');
     })().catch((error) => {
-      setStatus(error.message || '保存失败。', 'error');
+      setStatus(mapErrorMessage(error) || '保存失败。', 'error');
     });
   });
 
@@ -476,21 +651,13 @@ document.addEventListener('DOMContentLoaded', async () => {
       setStatus('导出完成，已同步追踪。', 'success');
       await loadRecordIntoForm();
     })().catch((error) => {
-      setStatus(error.message || '导出失败。', 'error');
-    });
-  });
-
-  injectButton.addEventListener('click', () => {
-    withLoading(injectButton, '处理中...', async () => {
-      await injectButtonsFromPopup();
-      setStatus('已尝试注入页面按钮。', 'success');
-    })().catch((error) => {
-      setStatus(error.message || '注入失败。', 'error');
+      setStatus(mapErrorMessage(error) || '导出失败。', 'error');
     });
   });
 
   try {
     await refreshBindingState();
+    await refreshOutputBindingState();
     await refreshCurrentJobInfo();
     await loadRecordIntoForm();
     setStatus('准备就绪。', 'success');

@@ -49,8 +49,6 @@
     ]
   };
 
-  let keepAliveTimer = null;
-
   function sendRuntimeMessage(message) {
     return new Promise((resolve, reject) => {
       chrome.runtime.sendMessage(message, (response) => {
@@ -192,6 +190,29 @@
     ].join('\n');
   }
 
+  function mapTxtExportErrorMessage(errorCode, fallbackMessage) {
+    if (errorCode === 'NO_OUTPUT_DIR_BOUND') {
+      return '请先在扩展 popup 中设置 TXT 保存文件夹。';
+    }
+    if (errorCode === 'OUTPUT_DIR_PERMISSION_DENIED') {
+      return 'TXT 保存文件夹权限不足，请在扩展 popup 中重新设置。';
+    }
+    if (errorCode === 'OUTPUT_DIR_NOT_FOUND') {
+      return 'TXT 保存文件夹不可用，请在扩展 popup 中重新设置。';
+    }
+    if (errorCode === 'OUTPUT_WRITE_FAILED') {
+      return '写入 TXT 文件失败，请稍后重试。';
+    }
+    return fallbackMessage || '导出 TXT 失败，请重试。';
+  }
+
+  function formatLogError(error) {
+    if (!error) return 'unknown error';
+    if (typeof error === 'string') return error;
+    if (error.message) return error.message;
+    return String(error);
+  }
+
   function showToast(message, isError) {
     let toast = document.getElementById('linkedin-job-tracker-toast');
     if (!toast) {
@@ -213,115 +234,6 @@
     if (!messageElement) return;
     messageElement.textContent = message || '';
     messageElement.className = isError ? 'linkedin-track-message linkedin-track-message-error' : 'linkedin-track-message';
-  }
-
-  function findActionsContainerFallback() {
-    const candidates = [];
-    const byAria = [
-      'button[aria-label*="Apply"]',
-      'button[aria-label*="Quick Apply"]',
-      'button[aria-label*="Save"]',
-      'button[aria-label*="申请"]',
-      'button[aria-label*="快速申请"]',
-      'button[aria-label*="保存"]',
-      'a[aria-label*="Apply"]'
-    ];
-
-    for (const selector of byAria) {
-      const element = document.querySelector(selector);
-      if (element) candidates.push(element);
-    }
-
-    const header = findElement(SELECTORS.headerContainer) || document;
-    const anyHeaderButton = header.querySelector('button, a[role="button"]');
-    if (anyHeaderButton) candidates.push(anyHeaderButton);
-
-    const hasEnoughActions = (node) => {
-      if (!node || node.nodeType !== Node.ELEMENT_NODE) return false;
-      const buttons = node.querySelectorAll('button, a[role="button"], a');
-      return buttons.length >= 2;
-    };
-
-    for (const element of candidates) {
-      let cursor = element;
-      for (let i = 0; i < 8 && cursor; i += 1) {
-        if (hasEnoughActions(cursor)) return cursor;
-        cursor = cursor.parentElement;
-      }
-    }
-
-    return null;
-  }
-
-  function createExportButton() {
-    const button = document.createElement('button');
-    button.id = 'linkedin-export-btn';
-    button.textContent = 'Export TXT';
-    button.addEventListener('click', () => {
-      exportToTxt().catch((error) => {
-        console.error('LinkedIn Job Exporter: export failed', error);
-      });
-    });
-    return button;
-  }
-
-  function createTrackButton() {
-    const button = document.createElement('button');
-    button.id = 'linkedin-track-btn';
-    button.textContent = 'Track Job';
-    button.addEventListener('click', () => {
-      openTrackerPanel().catch((error) => {
-        console.error('LinkedIn Job Tracker: panel open failed', error);
-      });
-    });
-    return button;
-  }
-
-  function injectFloatingButtons() {
-    let container = document.getElementById('linkedin-job-tools-floating');
-    if (!container) {
-      container = document.createElement('div');
-      container.id = 'linkedin-job-tools-floating';
-      document.body.appendChild(container);
-    }
-
-    if (!document.getElementById('linkedin-export-btn')) {
-      container.appendChild(createExportButton());
-    }
-    if (!document.getElementById('linkedin-track-btn')) {
-      container.appendChild(createTrackButton());
-    }
-  }
-
-  function injectActionButtons() {
-    if (document.getElementById('linkedin-export-btn') && document.getElementById('linkedin-track-btn')) return;
-
-    try {
-      const actionsContainer = findElement(SELECTORS.actionsContainer) || findActionsContainerFallback();
-      if (!actionsContainer) {
-        injectFloatingButtons();
-        return;
-      }
-
-      const targetContainer = actionsContainer.classList.contains('display-flex')
-        ? actionsContainer
-        : actionsContainer.closest('.display-flex') || actionsContainer.parentElement;
-
-      if (!targetContainer) {
-        injectFloatingButtons();
-        return;
-      }
-
-      if (!document.getElementById('linkedin-export-btn')) {
-        targetContainer.appendChild(createExportButton());
-      }
-      if (!document.getElementById('linkedin-track-btn')) {
-        targetContainer.appendChild(createTrackButton());
-      }
-    } catch (error) {
-      console.warn('LinkedIn Job Tracker: failed to inject action buttons', error);
-      injectFloatingButtons();
-    }
   }
 
   function createTrackerPanel() {
@@ -365,7 +277,7 @@
     const saveButton = panel.querySelector('#linkedin-track-save');
     saveButton.addEventListener('click', () => {
       saveTrackerFromPanel().catch((error) => {
-        console.error('LinkedIn Job Tracker: save failed', error);
+        console.error(`LinkedIn Job Tracker: save failed: ${formatLogError(error)}`);
       });
     });
 
@@ -512,44 +424,36 @@
   }
 
   async function exportToTxt() {
-    const button = document.getElementById('linkedin-export-btn');
-    if (button) {
-      button.textContent = 'Exporting...';
-      button.disabled = true;
-    }
-
     try {
       const jobInfo = getCurrentJobInfo();
       const filename = generateFilename(jobInfo.companyName, jobInfo.jobTitle, jobInfo.location);
       const content = buildTxtContent(jobInfo);
-      const blob = new Blob([content], { type: 'text/plain;charset=utf-8' });
-      const url = URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `${filename}.txt`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      URL.revokeObjectURL(url);
+      const exportResponse = await sendRuntimeMessage({
+        type: 'TXT_EXPORT_TO_BOUND_DIR',
+        fileBaseName: filename,
+        content,
+        source: 'content_export'
+      });
+      if (!exportResponse?.ok) {
+        throw new Error(mapTxtExportErrorMessage(exportResponse?.errorCode, exportResponse?.message));
+      }
 
       const trackerResult = await trackAfterExport(jobInfo);
       if (!trackerResult.ok) {
-        console.warn('LinkedIn Job Tracker: auto-track after export failed', trackerResult);
+        const trackerErrorCode = trackerResult.errorCode || 'TRACKER_UPSERT_FAILED';
+        const trackerMessage = trackerResult.message || 'Tracker sync failed';
+        console.debug(`[LinkedIn Job Tracker] auto-track skipped: ${trackerErrorCode} ${trackerMessage}`);
       }
 
       return {
         ok: true,
-        trackerResult
+        trackerResult,
+        writtenFileName: exportResponse.writtenFileName
       };
     } catch (error) {
-      console.error('LinkedIn Job Exporter: Failed to export TXT', error);
-      alert('Failed to export TXT. Please try again.');
+      console.error(`LinkedIn Job Exporter: failed to export TXT: ${formatLogError(error)}`);
+      alert(error?.message || 'Failed to export TXT. Please try again.');
       throw error;
-    } finally {
-      if (button) {
-        button.textContent = 'Export TXT';
-        button.disabled = false;
-      }
     }
   }
 
@@ -558,12 +462,6 @@
       if (!message || !message.type) return undefined;
 
       if (message.type === 'PING') {
-        sendResponse({ ok: true });
-        return undefined;
-      }
-
-      if (message.type === 'INJECT_BUTTON') {
-        injectActionButtons();
         sendResponse({ ok: true });
         return undefined;
       }
@@ -586,29 +484,6 @@
 
   function init() {
     setupRuntimeMessageHandlers();
-    injectActionButtons();
-
-    let lastUrl = location.href;
-    const observer = new MutationObserver(() => {
-      if (location.href !== lastUrl) {
-        lastUrl = location.href;
-        setTimeout(() => {
-          injectActionButtons();
-          const panel = document.getElementById('linkedin-track-panel');
-          if (panel) panel.classList.add('linkedin-hidden');
-        }, 500);
-      }
-    });
-    observer.observe(document.body, { childList: true, subtree: true });
-
-    if (keepAliveTimer) {
-      clearInterval(keepAliveTimer);
-    }
-    keepAliveTimer = window.setInterval(() => {
-      if (!document.getElementById('linkedin-export-btn') || !document.getElementById('linkedin-track-btn')) {
-        injectActionButtons();
-      }
-    }, 2000);
   }
 
   if (document.readyState === 'loading') {
