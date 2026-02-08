@@ -166,21 +166,52 @@
     return '';
   }
 
-  function normalizeLinkedInJobUrl(urlValue) {
+  function toStablePageUrl(rawUrl, jobId) {
     try {
-      const url = new URL(urlValue, location.href);
-      url.search = '';
+      const url = new URL(rawUrl, location.href);
+      const normalizedJobId = isNumericString(jobId) ? String(jobId).trim() : '';
+
+      if (normalizedJobId) {
+        return `${url.origin}/jobs/view/currentJobId=${normalizedJobId}/`;
+      }
+
       url.hash = '';
       return url.toString().replace(/\/$/, '');
     } catch (_error) {
-      return String(urlValue || '').split('?')[0].split('#')[0];
+      return String(rawUrl || '').split('#')[0];
     }
   }
 
-  function extractJobIdFromUrl(urlValue) {
-    const normalized = normalizeLinkedInJobUrl(urlValue);
-    const match = normalized.match(/\/jobs\/view\/(\d+)/);
-    return match ? match[1] : '';
+  function isNumericString(value) {
+    return /^\d+$/.test(String(value || '').trim());
+  }
+
+  function extractJobIdFromRawUrl(rawUrl) {
+    try {
+      const url = new URL(rawUrl, location.href);
+      const pathMatch = url.pathname.match(/\/jobs\/view\/(\d+)/);
+      if (pathMatch) {
+        return pathMatch[1];
+      }
+
+      const queryParamNames = ['currentJobId', 'jobId'];
+      for (const name of queryParamNames) {
+        const value = url.searchParams.get(name);
+        if (isNumericString(value)) {
+          return String(value).trim();
+        }
+      }
+    } catch (_error) {
+      // Fall through to best-effort regex parsing below.
+    }
+
+    const pathMatch = String(rawUrl || '').match(/\/jobs\/view\/(\d+)/);
+    if (pathMatch) {
+      return pathMatch[1];
+    }
+
+    const queryMatch = String(rawUrl || '').match(/[?&](?:currentJobId|jobId)=(\d+)/i);
+    return queryMatch ? queryMatch[1] : '';
   }
 
   function delay(ms) {
@@ -644,9 +675,10 @@
 
   function getCurrentJobInfo() {
     const coreInfo = extractJobInfo();
-    const jobUrl = normalizeLinkedInJobUrl(location.href);
-    const jobId = extractJobIdFromUrl(jobUrl);
-    const jobKey = jobId || jobUrl;
+    const rawUrl = location.href;
+    const jobId = extractJobIdFromRawUrl(rawUrl);
+    const jobUrl = toStablePageUrl(rawUrl, jobId);
+    const jobKey = jobUrl;
 
     return {
       ...coreInfo,
@@ -659,8 +691,7 @@
   function buildTrackerRecordDraft(jobInfo, overrides) {
     const custom = overrides || {};
     return {
-      job_key: jobInfo.jobKey,
-      job_id: jobInfo.jobId,
+      job_id: '',
       company: jobInfo.companyName,
       position: jobInfo.jobTitle,
       location: jobInfo.location,
@@ -742,6 +773,16 @@
     if (typeof error === 'string') return error;
     if (error.message) return error.message;
     return String(error);
+  }
+
+  function inferExportErrorCode(error) {
+    if (!error) return 'UNKNOWN_ERROR';
+    if (error.errorCode) return error.errorCode;
+    if (error.code) return error.code;
+    const message = String(error.message || error || '').toLowerCase();
+    if (message.includes('timeout') || message.includes('超时')) return 'MESSAGE_TIMEOUT';
+    if (message.includes('no response') || message.includes('没有返回结果')) return 'MESSAGE_NO_RESPONSE';
+    return 'UNKNOWN_ERROR';
   }
 
   function showToast(message, isError) {
@@ -961,7 +1002,9 @@
         source: 'content_export'
       });
       if (!exportResponse?.ok) {
-        throw new Error(mapTxtExportErrorMessage(exportResponse?.errorCode, exportResponse?.message));
+        const exportError = new Error(mapTxtExportErrorMessage(exportResponse?.errorCode, exportResponse?.message));
+        exportError.errorCode = exportResponse?.errorCode || 'TXT_EXPORT_FAILED';
+        throw exportError;
       }
 
       const trackerResult = await trackAfterExport(jobInfo);
@@ -979,6 +1022,9 @@
         writtenFileName: exportResponse.writtenFileName
       };
     } catch (error) {
+      if (!error?.errorCode) {
+        error.errorCode = inferExportErrorCode(error);
+      }
       console.error(`LinkedIn Job Exporter: failed to export TXT: ${formatLogError(error)}`);
       alert(error?.message || 'Failed to export TXT. Please try again.');
       throw error;
@@ -1005,7 +1051,7 @@
           .catch((error) =>
             sendResponse({
               ok: false,
-              errorCode: error?.errorCode || error?.code || 'UNKNOWN_ERROR',
+              errorCode: inferExportErrorCode(error),
               message: error?.message || String(error)
             })
           );

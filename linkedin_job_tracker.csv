@@ -1,3 +1,1 @@
-﻿job_key,job_id,company,position,location,job_url,status,saved_at,applied_at,interview_at,rejected_at,round1_pass,round2_pass,round3_pass,notes,created_at,updated_at
-https://www.linkedin.com/jobs/search,,"Alexion Pharmaceuticals, Inc.",Partner in Patient Services Data & Reporting,"Mississauga, ON",https://www.linkedin.com/jobs/search,Saved,2026-02-05T19:38:09.350Z,,,,0,0,0,,2026-02-05T19:38:09.350Z,2026-02-06T19:31:29.642Z
-https://www.linkedin.com/jobs/search,,Electronic Arts (EA),Data Scientist,"Ontario, Canada",https://www.linkedin.com/jobs/search,Saved,2026-02-05T19:38:09.350Z,,,,0,0,0,,2026-02-05T19:38:09.350Z,2026-02-06T19:33:59.120Z
+﻿job_id,company,position,location,job_url,status,saved_at,applied_at,interview_at,rejected_at,round1_pass,round2_pass,round3_pass,notes,created_at,updated_at

@@ -6,6 +6,7 @@ const IDB_CONFIG = {
 };
 
 const PENDING_DRAFT_KEY = 'trackerPendingDraft';
+const MESSAGE_TIMEOUT_MS = 15000;
 
 let activeTab = null;
 let currentJobInfo = null;
@@ -22,7 +23,7 @@ function setStatus(message, type) {
 }
 
 function mapErrorMessage(responseOrError) {
-  const code = responseOrError?.errorCode;
+  const code = responseOrError?.errorCode || responseOrError?.code;
   if (code === 'SCHEMA_MISMATCH') {
     return 'CSV 表头不匹配。请使用“创建标准模板 CSV”。';
   }
@@ -50,6 +51,18 @@ function mapErrorMessage(responseOrError) {
   if (code === 'TRACKER_UPSERT_FAILED') {
     return 'TXT 已导出，但 CSV 同步失败，请检查 CSV 绑定与权限。';
   }
+  if (code === 'MESSAGE_TIMEOUT') {
+    return '请求超时，请重试。';
+  }
+  if (code === 'MESSAGE_NO_RESPONSE') {
+    return '扩展未返回结果，请刷新页面后重试。';
+  }
+  if (code === 'CSV_BINDING_MISMATCH') {
+    return 'CSV 绑定校验失败，请重新绑定后重试。';
+  }
+  if (code === 'OUTPUT_BINDING_MISMATCH') {
+    return 'TXT 输出目录绑定校验失败，请重新设置后重试。';
+  }
   return responseOrError?.message || '操作失败。';
 }
 
@@ -65,9 +78,23 @@ async function getActiveTab() {
 
 function sendRuntimeMessage(message) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(createMappedError('MESSAGE_TIMEOUT', '扩展后台请求超时，请重试。'));
+    }, MESSAGE_TIMEOUT_MS);
+
     chrome.runtime.sendMessage(message, (response) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (response === undefined) {
+        reject(createMappedError('MESSAGE_NO_RESPONSE', '扩展后台没有返回结果。'));
         return;
       }
       resolve(response);
@@ -77,9 +104,23 @@ function sendRuntimeMessage(message) {
 
 function sendTabMessage(tabId, message) {
   return new Promise((resolve, reject) => {
+    let settled = false;
+    const timeoutId = window.setTimeout(() => {
+      if (settled) return;
+      settled = true;
+      reject(createMappedError('MESSAGE_TIMEOUT', '页面通信超时，请重试。'));
+    }, MESSAGE_TIMEOUT_MS);
+
     chrome.tabs.sendMessage(tabId, message, (response) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeoutId);
       if (chrome.runtime.lastError) {
         reject(new Error(chrome.runtime.lastError.message));
+        return;
+      }
+      if (response === undefined) {
+        reject(createMappedError('MESSAGE_NO_RESPONSE', '页面脚本没有返回结果。'));
         return;
       }
       resolve(response);
@@ -121,8 +162,21 @@ async function setStoredHandle(handle) {
     const transaction = db.transaction(IDB_CONFIG.STORE_NAME, 'readwrite');
     const store = transaction.objectStore(IDB_CONFIG.STORE_NAME);
     const request = store.put(handle, IDB_CONFIG.HANDLE_KEY);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    let settled = false;
+    const settleResolve = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const settleReject = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    request.onerror = () => settleReject(request.error || new Error('Failed to store CSV handle.'));
+    transaction.oncomplete = () => settleResolve();
+    transaction.onerror = () => settleReject(transaction.error || request.error || new Error('Failed to store CSV handle.'));
+    transaction.onabort = () => settleReject(transaction.error || new Error('Storing CSV handle was aborted.'));
   });
 }
 
@@ -143,8 +197,21 @@ async function setStoredTxtOutputDirHandle(handle) {
     const transaction = db.transaction(IDB_CONFIG.STORE_NAME, 'readwrite');
     const store = transaction.objectStore(IDB_CONFIG.STORE_NAME);
     const request = store.put(handle, IDB_CONFIG.TXT_OUTPUT_DIR_HANDLE_KEY);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    let settled = false;
+    const settleResolve = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const settleReject = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    request.onerror = () => settleReject(request.error || new Error('Failed to store TXT output handle.'));
+    transaction.oncomplete = () => settleResolve();
+    transaction.onerror = () => settleReject(transaction.error || request.error || new Error('Failed to store TXT output handle.'));
+    transaction.onabort = () => settleReject(transaction.error || new Error('Storing TXT output handle was aborted.'));
   });
 }
 
@@ -215,6 +282,14 @@ async function ensureStoredHandlePermission(handle, options) {
 async function ensureStoredCsvWritePermission() {
   const handle = await getStoredHandle();
   if (!handle) {
+    try {
+      const remoteState = await sendRuntimeMessage({ type: 'TRACKER_GET_BINDING_STATE' });
+      if (remoteState?.ok && remoteState.isBound) {
+        return;
+      }
+    } catch (_error) {
+      // Ignore fallback read errors; surface the original NO_BOUND_FILE below.
+    }
     throw createMappedError('NO_BOUND_FILE', '尚未绑定 CSV 文件。');
   }
   await ensureStoredHandlePermission(handle, {
@@ -229,6 +304,14 @@ async function ensureStoredCsvWritePermission() {
 async function ensureStoredTxtOutputWritePermission() {
   const handle = await getStoredTxtOutputDirHandle();
   if (!handle) {
+    try {
+      const remoteState = await sendRuntimeMessage({ type: 'TXT_GET_OUTPUT_STATE' });
+      if (remoteState?.ok && remoteState.isBound) {
+        return;
+      }
+    } catch (_error) {
+      // Ignore fallback read errors; surface the original NO_OUTPUT_DIR_BOUND below.
+    }
     throw createMappedError('NO_OUTPUT_DIR_BOUND', '尚未设置 TXT 保存文件夹。');
   }
   await ensureStoredHandlePermission(handle, {
@@ -330,7 +413,9 @@ function updateBindingUi(state) {
   if (state.boundAt) parts.push(`Bound: ${new Date(state.boundAt).toLocaleString()}`);
   if (state.lastSyncAt) parts.push(`Last Sync: ${new Date(state.lastSyncAt).toLocaleString()}`);
   if (state.needsRebind) parts.push('需要重新绑定');
-  if (state.lastError) parts.push(`Error: ${state.lastError}`);
+  if (state.lastError && (state.needsRebind || state.lastError !== 'UNKNOWN_ERROR')) {
+    parts.push(`Error: ${state.lastError}`);
+  }
   detail.textContent = parts.join(' | ');
 }
 
@@ -350,11 +435,14 @@ function updateTxtOutputBindingUi(state) {
   if (state.boundAt) parts.push(`Bound: ${new Date(state.boundAt).toLocaleString()}`);
   if (state.lastWriteAt) parts.push(`Last Write: ${new Date(state.lastWriteAt).toLocaleString()}`);
   if (state.needsRebind) parts.push('需要重新绑定');
-  if (state.lastError) parts.push(`Error: ${state.lastError}`);
+  if (state.lastError && (state.needsRebind || state.lastError !== 'UNKNOWN_ERROR')) {
+    parts.push(`Error: ${state.lastError}`);
+  }
   detail.textContent = parts.join(' | ');
 }
 
-async function refreshBindingState() {
+async function refreshBindingState(options = {}) {
+  const throwOnError = Boolean(options.throwOnError);
   try {
     const response = await sendRuntimeMessage({ type: 'TRACKER_GET_BINDING_STATE' });
     if (!response?.ok) {
@@ -365,11 +453,13 @@ async function refreshBindingState() {
     return response;
   } catch (error) {
     setStatus(error.message || '获取绑定状态失败。', 'error');
+    if (throwOnError) throw error;
     return null;
   }
 }
 
-async function refreshOutputBindingState() {
+async function refreshOutputBindingState(options = {}) {
+  const throwOnError = Boolean(options.throwOnError);
   try {
     const response = await sendRuntimeMessage({ type: 'TXT_GET_OUTPUT_STATE' });
     if (!response?.ok) {
@@ -380,7 +470,40 @@ async function refreshOutputBindingState() {
     return response;
   } catch (error) {
     setStatus(error.message || '获取 TXT 输出目录状态失败。', 'error');
+    if (throwOnError) throw error;
     return null;
+  }
+}
+
+function assertBindingName(state, expectedName) {
+  if (!state?.isBound) {
+    throw createMappedError('NO_BOUND_FILE', 'CSV 未绑定。');
+  }
+  const actualName = String(state.fileName || '').trim();
+  const wantedName = String(expectedName || '').trim();
+  if (!actualName || !wantedName || actualName === wantedName) return;
+  throw createMappedError('CSV_BINDING_MISMATCH', `CSV 绑定校验失败，当前为 ${actualName}，预期为 ${wantedName}。`);
+}
+
+function assertOutputDirectoryName(state, expectedName) {
+  if (!state?.isBound) {
+    throw createMappedError('NO_OUTPUT_DIR_BOUND', 'TXT 保存文件夹未绑定。');
+  }
+  const actualName = String(state.directoryName || '').trim();
+  const wantedName = String(expectedName || '').trim();
+  if (!actualName || !wantedName || actualName === wantedName) return;
+  throw createMappedError('OUTPUT_BINDING_MISMATCH', `TXT 输出目录校验失败，当前为 ${actualName}，预期为 ${wantedName}。`);
+}
+
+async function validateBindingConsistency() {
+  const storedCsvHandle = await getStoredHandle();
+  if (storedCsvHandle?.name && currentBindingState?.isBound) {
+    assertBindingName(currentBindingState, storedCsvHandle.name);
+  }
+
+  const storedOutputHandle = await getStoredTxtOutputDirHandle();
+  if (storedOutputHandle?.name && currentOutputBindingState?.isBound) {
+    assertOutputDirectoryName(currentOutputBindingState, storedOutputHandle.name);
   }
 }
 
@@ -409,12 +532,16 @@ async function bindExistingCsv() {
   await setStoredHandle(handle);
   const response = await sendRuntimeMessage({
     type: 'TRACKER_BIND_CSV',
+    fileHandle: handle,
     fileName: handle.name,
     boundAt: new Date().toISOString()
   });
   if (!response?.ok) {
     throw new Error(mapErrorMessage(response));
   }
+  const state = await refreshBindingState({ throwOnError: true });
+  assertBindingName(state, handle.name);
+  await refreshOutputBindingState({ throwOnError: true });
 }
 
 async function createTemplateCsvAndBind() {
@@ -438,12 +565,16 @@ async function createTemplateCsvAndBind() {
   await setStoredHandle(handle);
   const response = await sendRuntimeMessage({
     type: 'TRACKER_BIND_CSV',
+    fileHandle: handle,
     fileName: handle.name,
     boundAt: new Date().toISOString()
   });
   if (!response?.ok) {
     throw new Error(mapErrorMessage(response));
   }
+  const state = await refreshBindingState({ throwOnError: true });
+  assertBindingName(state, handle.name);
+  await refreshOutputBindingState({ throwOnError: true });
 }
 
 async function bindTxtOutputDirectory() {
@@ -456,12 +587,16 @@ async function bindTxtOutputDirectory() {
   await setStoredTxtOutputDirHandle(handle);
   const response = await sendRuntimeMessage({
     type: 'TXT_BIND_OUTPUT_DIR',
+    directoryHandle: handle,
     directoryName: handle.name,
     boundAt: new Date().toISOString()
   });
   if (!response?.ok) {
     throw new Error(mapErrorMessage(response));
   }
+  const outputState = await refreshOutputBindingState({ throwOnError: true });
+  assertOutputDirectoryName(outputState, handle.name);
+  await refreshBindingState({ throwOnError: true });
 }
 
 async function refreshCurrentJobInfo() {
@@ -525,16 +660,13 @@ async function saveTracking() {
     throw new Error('未检测到当前职位信息。');
   }
 
-  if (!currentBindingState?.isBound || currentBindingState?.needsRebind) {
-    throw new Error('CSV 未绑定或需要重新绑定。');
+  if (!currentBindingState?.isBound) {
+    throw new Error('CSV 未绑定。');
   }
-
-  await ensureStoredCsvWritePermission();
 
   const form = readFormState();
   const payload = {
-    job_key: currentJobInfo.jobKey,
-    job_id: currentJobInfo.jobId,
+    job_id: '',
     company: currentJobInfo.companyName,
     position: currentJobInfo.jobTitle,
     location: currentJobInfo.location,
@@ -561,16 +693,18 @@ async function saveTracking() {
 }
 
 async function exportTxtFromPopup() {
+  activeTab = await getActiveTab();
+  await refreshBindingState();
+  await refreshOutputBindingState();
+  await validateBindingConsistency();
+
   if (!activeTab?.id || !isLinkedInJobsPage(activeTab?.url)) {
     throw new Error('请先打开 LinkedIn 职位详情页。');
   }
 
-  if (!currentBindingState?.isBound || currentBindingState?.needsRebind) {
-    throw new Error('CSV 未绑定或需要重新绑定。');
+  if (!currentBindingState?.isBound) {
+    throw new Error('CSV 未绑定。');
   }
-
-  await ensureStoredCsvWritePermission();
-  await ensureStoredTxtOutputWritePermission();
 
   await ensureScriptInjected(activeTab.id);
   const response = await sendTabMessage(activeTab.id, { type: 'EXPORT_TXT' });
@@ -586,6 +720,8 @@ async function exportTxtFromPopup() {
   }
 
   await refreshBindingState();
+  await refreshOutputBindingState();
+  return response;
 }
 
 function registerFormPersistenceListeners() {
@@ -617,7 +753,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindExistingButton.addEventListener('click', () => {
     withLoading(bindExistingButton, '绑定中...', async () => {
       await bindExistingCsv();
-      await refreshBindingState();
       setStatus('CSV 绑定成功。', 'success');
       await loadRecordIntoForm();
     })().catch((error) => {
@@ -628,7 +763,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   createTemplateButton.addEventListener('click', () => {
     withLoading(createTemplateButton, '创建中...', async () => {
       await createTemplateCsvAndBind();
-      await refreshBindingState();
       setStatus('模板 CSV 已创建并绑定。', 'success');
       await loadRecordIntoForm();
     })().catch((error) => {
@@ -639,7 +773,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   bindTxtOutputButton.addEventListener('click', () => {
     withLoading(bindTxtOutputButton, '设置中...', async () => {
       await bindTxtOutputDirectory();
-      await refreshOutputBindingState();
       setStatus('TXT 保存文件夹设置成功。', 'success');
     })().catch((error) => {
       setStatus(mapErrorMessage(error) || 'TXT 保存文件夹设置失败。', 'error');
@@ -657,8 +790,11 @@ document.addEventListener('DOMContentLoaded', async () => {
 
   exportButton.addEventListener('click', () => {
     withLoading(exportButton, '导出中...', async () => {
-      await exportTxtFromPopup();
-      setStatus('导出完成，已同步追踪。', 'success');
+      setStatus('导出中...', 'success');
+      const result = await exportTxtFromPopup();
+      const writtenFileName = String(result?.writtenFileName || '').trim();
+      const successMessage = writtenFileName ? `导出完成：${writtenFileName}；CSV 已同步。` : '导出完成；CSV 已同步。';
+      setStatus(successMessage, 'success');
       await loadRecordIntoForm();
     })().catch((error) => {
       setStatus(mapErrorMessage(error) || '导出失败。', 'error');

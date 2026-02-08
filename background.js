@@ -60,6 +60,14 @@ function makeError(code, message, cause) {
   return error;
 }
 
+function isFileHandleLike(handle) {
+  return Boolean(handle && typeof handle.getFile === 'function' && typeof handle.createWritable === 'function');
+}
+
+function isDirectoryHandleLike(handle) {
+  return Boolean(handle && typeof handle.getFileHandle === 'function');
+}
+
 function getDefaultBindingMeta() {
   return {
     isBound: false,
@@ -115,8 +123,21 @@ async function setStoredHandle(handle) {
     const transaction = db.transaction(IDB_CONFIG.STORE_NAME, 'readwrite');
     const store = transaction.objectStore(IDB_CONFIG.STORE_NAME);
     const request = store.put(handle, IDB_CONFIG.HANDLE_KEY);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    let settled = false;
+    const settleResolve = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const settleReject = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    request.onerror = () => settleReject(request.error || new Error('Failed to store CSV handle.'));
+    transaction.oncomplete = () => settleResolve();
+    transaction.onerror = () => settleReject(transaction.error || request.error || new Error('Failed to store CSV handle.'));
+    transaction.onabort = () => settleReject(transaction.error || new Error('Storing CSV handle was aborted.'));
   });
 }
 
@@ -137,8 +158,21 @@ async function setStoredTxtOutputDirHandle(handle) {
     const transaction = db.transaction(IDB_CONFIG.STORE_NAME, 'readwrite');
     const store = transaction.objectStore(IDB_CONFIG.STORE_NAME);
     const request = store.put(handle, IDB_CONFIG.TXT_OUTPUT_DIR_HANDLE_KEY);
-    request.onsuccess = () => resolve();
-    request.onerror = () => reject(request.error);
+    let settled = false;
+    const settleResolve = () => {
+      if (settled) return;
+      settled = true;
+      resolve();
+    };
+    const settleReject = (error) => {
+      if (settled) return;
+      settled = true;
+      reject(error);
+    };
+    request.onerror = () => settleReject(request.error || new Error('Failed to store TXT output handle.'));
+    transaction.oncomplete = () => settleResolve();
+    transaction.onerror = () => settleReject(transaction.error || request.error || new Error('Failed to store TXT output handle.'));
+    transaction.onabort = () => settleReject(transaction.error || new Error('Storing TXT output handle was aborted.'));
   });
 }
 
@@ -183,6 +217,13 @@ function normalizeRoundValue(value) {
 function inferErrorCode(error) {
   if (!error) return ERROR_CODES.UNKNOWN_ERROR;
   if (error.code) return error.code;
+  const message = String(error?.message || '').toLowerCase();
+  if (message.includes('getfile is not a function') || message.includes('createwritable is not a function')) {
+    return ERROR_CODES.NO_BOUND_FILE;
+  }
+  if (message.includes('getfilehandle is not a function')) {
+    return ERROR_CODES.NO_OUTPUT_DIR_BOUND;
+  }
   if (error.name === 'NotFoundError') return ERROR_CODES.FILE_NOT_FOUND;
   if (error.name === 'NotAllowedError' || error.name === 'SecurityError') return ERROR_CODES.PERMISSION_DENIED;
   return ERROR_CODES.UNKNOWN_ERROR;
@@ -230,12 +271,14 @@ async function applyErrorStateByMessageType(messageType, errorPayload) {
 
 async function resolveBindingState() {
   const meta = await getBindingMeta();
-  const handle = await getStoredHandle();
+  const rawHandle = await getStoredHandle();
+  const handle = isFileHandleLike(rawHandle) ? rawHandle : null;
+  const hasKnownRebindError = Boolean(meta.lastError && TRACKER_NEEDS_REBIND_CODES.has(meta.lastError));
 
   let permission = 'unavailable';
-  let needsRebind = Boolean(meta.needsRebind);
+  let needsRebind = false;
   let isBound = Boolean(handle);
-  let fileName = meta.fileName || (handle?.name || '');
+  let fileName = meta.fileName || (handle?.name || rawHandle?.name || '');
 
   if (handle && typeof handle.queryPermission === 'function') {
     try {
@@ -243,15 +286,20 @@ async function resolveBindingState() {
     } catch (_error) {
       permission = 'unknown';
     }
-  } else if (meta.isBound) {
-    needsRebind = true;
   }
-
   if (!handle && meta.isBound) {
     needsRebind = true;
   }
 
-  if (meta.lastError && TRACKER_NEEDS_REBIND_CODES.has(meta.lastError)) {
+  if (rawHandle && !handle) {
+    needsRebind = true;
+  }
+
+  if (hasKnownRebindError) {
+    needsRebind = true;
+  }
+
+  if (permission === 'denied') {
     needsRebind = true;
   }
 
@@ -272,12 +320,14 @@ async function resolveBindingState() {
 
 async function resolveTxtOutputState() {
   const meta = await getTxtOutputBindingMeta();
-  const handle = await getStoredTxtOutputDirHandle();
+  const rawHandle = await getStoredTxtOutputDirHandle();
+  const handle = isDirectoryHandleLike(rawHandle) ? rawHandle : null;
+  const hasKnownRebindError = Boolean(meta.lastError && TXT_OUTPUT_NEEDS_REBIND_CODES.has(meta.lastError));
 
   let permission = 'unavailable';
-  let needsRebind = Boolean(meta.needsRebind);
+  let needsRebind = false;
   let isBound = Boolean(handle);
-  const directoryName = meta.directoryName || (handle?.name || '');
+  const directoryName = meta.directoryName || (handle?.name || rawHandle?.name || '');
 
   if (handle && typeof handle.queryPermission === 'function') {
     try {
@@ -285,15 +335,20 @@ async function resolveTxtOutputState() {
     } catch (_error) {
       permission = 'unknown';
     }
-  } else if (meta.isBound) {
-    needsRebind = true;
   }
-
   if (!handle && meta.isBound) {
     needsRebind = true;
   }
 
-  if (meta.lastError && TXT_OUTPUT_NEEDS_REBIND_CODES.has(meta.lastError)) {
+  if (rawHandle && !handle) {
+    needsRebind = true;
+  }
+
+  if (hasKnownRebindError) {
+    needsRebind = true;
+  }
+
+  if (permission === 'denied') {
     needsRebind = true;
   }
 
@@ -325,6 +380,9 @@ function normalizeStoredRecord(input) {
 }
 
 async function readCsvRecords(handle) {
+  if (!isFileHandleLike(handle)) {
+    throw makeError(ERROR_CODES.NO_BOUND_FILE, 'No valid CSV file handle is currently bound. Please rebind CSV.');
+  }
   let file;
   try {
     file = await handle.getFile();
@@ -355,6 +413,9 @@ async function readCsvRecords(handle) {
 }
 
 async function writeCsvRecords(handle, records) {
+  if (!isFileHandleLike(handle)) {
+    throw makeError(ERROR_CODES.NO_BOUND_FILE, 'No valid CSV file handle is currently bound. Please rebind CSV.');
+  }
   const text = TrackerCsv.serializeObjects(records, TrackerCsv.CSV_HEADERS, true);
   let writable = null;
   try {
@@ -381,6 +442,9 @@ async function writeCsvRecords(handle, records) {
 }
 
 async function validateOrInitializeCsv(handle) {
+  if (!isFileHandleLike(handle)) {
+    throw makeError(ERROR_CODES.NO_BOUND_FILE, 'No valid CSV file handle is currently bound. Please rebind CSV.');
+  }
   let file;
   try {
     file = await handle.getFile();
@@ -439,9 +503,10 @@ async function resolveUniqueTxtFileName(directoryHandle, fileBaseName) {
 }
 
 async function writeTxtToBoundDirectory(input) {
-  const directoryHandle = await getStoredTxtOutputDirHandle();
+  const rawDirectoryHandle = await getStoredTxtOutputDirHandle();
+  const directoryHandle = isDirectoryHandleLike(rawDirectoryHandle) ? rawDirectoryHandle : null;
   if (!directoryHandle) {
-    throw makeError(ERROR_CODES.NO_OUTPUT_DIR_BOUND, 'No output directory is currently bound.');
+    throw makeError(ERROR_CODES.NO_OUTPUT_DIR_BOUND, 'No valid output directory is currently bound. Please rebind output folder.');
   }
 
   const fileBaseName = normalizeTxtBaseName(input?.fileBaseName);
@@ -487,18 +552,21 @@ function normalizeDraft(recordDraft) {
     throw makeError(ERROR_CODES.INVALID_INPUT, 'recordDraft is required.');
   }
 
-  const jobKey = String(recordDraft.job_key || '').trim();
-  if (!jobKey) {
-    throw makeError(ERROR_CODES.INVALID_INPUT, 'job_key is required.');
+  const jobId = String(recordDraft.job_id || '').trim();
+  const jobUrl = String(recordDraft.job_url || '').trim();
+  const fallbackKey = String(recordDraft.job_key || '').trim();
+  const recordKey = jobId || jobUrl || fallbackKey;
+  if (!recordKey) {
+    throw makeError(ERROR_CODES.INVALID_INPUT, 'Either job_id or job_url is required.');
   }
 
   return {
-    job_key: jobKey,
-    job_id: String(recordDraft.job_id || '').trim(),
+    record_key: recordKey,
+    job_id: jobId,
     company: String(recordDraft.company || '').trim(),
     position: String(recordDraft.position || '').trim(),
     location: String(recordDraft.location || '').trim(),
-    job_url: String(recordDraft.job_url || '').trim(),
+    job_url: jobUrl,
     status: normalizeStatus(recordDraft.status),
     round1_pass: normalizeRoundValue(recordDraft.round1_pass),
     round2_pass: normalizeRoundValue(recordDraft.round2_pass),
@@ -521,8 +589,7 @@ function mergeRecord(existingRecord, draft, nowIso) {
     merged[header] = existingRecord?.[header] == null ? '' : String(existingRecord[header]);
   }
 
-  merged.job_key = draft.job_key;
-  merged.job_id = draft.job_id || merged.job_id;
+  merged.job_id = draft.job_id;
   merged.company = draft.company || merged.company;
   merged.position = draft.position || merged.position;
   merged.location = draft.location || merged.location;
@@ -546,7 +613,9 @@ async function enqueueWrite(task) {
 
 function findLatestRecordIndexByJobKey(records, jobKey) {
   for (let index = records.length - 1; index >= 0; index -= 1) {
-    if (records[index]?.job_key === jobKey) return index;
+    const candidate = records[index] || {};
+    const candidateKey = String(candidate.job_id || '').trim() || String(candidate.job_url || '').trim() || String(candidate.job_key || '').trim();
+    if (candidateKey === jobKey) return index;
   }
   return -1;
 }
@@ -555,14 +624,15 @@ async function upsertTrackerRecordWithMode(recordDraft, options) {
   const mode = options?.mode === 'append' ? 'append' : 'replace';
   return enqueueWrite(async () => {
     const draft = normalizeDraft(recordDraft);
-    const handle = await getStoredHandle();
+    const rawHandle = await getStoredHandle();
+    const handle = isFileHandleLike(rawHandle) ? rawHandle : null;
     if (!handle) {
-      throw makeError(ERROR_CODES.NO_BOUND_FILE, 'No CSV file is currently bound.');
+      throw makeError(ERROR_CODES.NO_BOUND_FILE, 'No valid CSV file is currently bound.');
     }
 
     const nowIso = new Date().toISOString();
     const records = await readCsvRecords(handle);
-    const existingIndex = findLatestRecordIndexByJobKey(records, draft.job_key);
+    const existingIndex = findLatestRecordIndexByJobKey(records, draft.record_key);
     const merged = mergeRecord(existingIndex >= 0 ? records[existingIndex] : null, draft, nowIso);
 
     if (mode === 'append') {
@@ -592,7 +662,8 @@ async function getRecordByJobKey(jobKey) {
     throw makeError(ERROR_CODES.INVALID_INPUT, 'jobKey is required.');
   }
 
-  const handle = await getStoredHandle();
+  const rawHandle = await getStoredHandle();
+  const handle = isFileHandleLike(rawHandle) ? rawHandle : null;
   if (!handle) {
     return null;
   }
@@ -603,13 +674,15 @@ async function getRecordByJobKey(jobKey) {
 }
 
 async function handleBindCsv(message) {
-  if (message?.fileHandle) {
-    await setStoredHandle(message.fileHandle);
+  const explicitHandle = isFileHandleLike(message?.fileHandle) ? message.fileHandle : null;
+  if (explicitHandle) {
+    await setStoredHandle(explicitHandle);
   }
 
-  const handle = await getStoredHandle();
+  const storedHandle = await getStoredHandle();
+  const handle = explicitHandle || (isFileHandleLike(storedHandle) ? storedHandle : null);
   if (!handle) {
-    throw makeError(ERROR_CODES.NO_BOUND_FILE, 'No file handle is available for CSV binding.');
+    throw makeError(ERROR_CODES.NO_BOUND_FILE, 'No valid file handle is available for CSV binding. Please rebind CSV.');
   }
 
   await validateOrInitializeCsv(handle);
@@ -640,13 +713,15 @@ async function handleGetBindingState() {
 }
 
 async function handleBindTxtOutputDir(message) {
-  if (message?.directoryHandle) {
-    await setStoredTxtOutputDirHandle(message.directoryHandle);
+  const explicitDirectoryHandle = isDirectoryHandleLike(message?.directoryHandle) ? message.directoryHandle : null;
+  if (explicitDirectoryHandle) {
+    await setStoredTxtOutputDirHandle(explicitDirectoryHandle);
   }
 
-  const directoryHandle = await getStoredTxtOutputDirHandle();
+  const storedDirectoryHandle = await getStoredTxtOutputDirHandle();
+  const directoryHandle = explicitDirectoryHandle || (isDirectoryHandleLike(storedDirectoryHandle) ? storedDirectoryHandle : null);
   if (!directoryHandle) {
-    throw makeError(ERROR_CODES.NO_OUTPUT_DIR_BOUND, 'No output directory handle is available.');
+    throw makeError(ERROR_CODES.NO_OUTPUT_DIR_BOUND, 'No valid output directory handle is available. Please rebind output folder.');
   }
 
   const boundAt = message?.boundAt || new Date().toISOString();
