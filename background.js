@@ -70,8 +70,8 @@ async function ensureContentScript(tabId) {
 }
 
 function setBadge(text, color) {
-  chrome.action.setBadgeBackgroundColor({ color }).catch(() => {});
-  chrome.action.setBadgeText({ text }).catch(() => {});
+  chrome.action.setBadgeBackgroundColor({ color }).catch(() => { });
+  chrome.action.setBadgeText({ text }).catch(() => { });
 }
 
 async function flashBadge(text, color) {
@@ -126,6 +126,102 @@ async function exportCurrentJobFromTab(tab) {
     await flashBadge('ERR', '#b91c1c');
   }
 }
+
+// ---------------------------------------------------------------------------
+// OneClick Job Tracker auto-trigger support
+// ---------------------------------------------------------------------------
+
+const ONECLICK_AUTO_STATE_KEY = 'oneclickAutoState';
+
+async function updateOneClickAutoState(patch) {
+  try {
+    const result = await chrome.storage.local.get(ONECLICK_AUTO_STATE_KEY);
+    const current = result?.[ONECLICK_AUTO_STATE_KEY] || {};
+    const next = { ...current, ...patch };
+    await chrome.storage.local.set({ [ONECLICK_AUTO_STATE_KEY]: next });
+  } catch (_error) {
+    // Non-blocking.
+  }
+}
+
+async function handleOneClickTriggered(message, sender) {
+  const tab = sender?.tab;
+  if (!tab?.id || !isLinkedInJobsPage(tab.url)) {
+    await updateOneClickAutoState({
+      lastTriggeredAt: new Date().toISOString(),
+      lastFailureAt: new Date().toISOString(),
+      lastErrorCode: 'INVALID_TAB',
+      lastErrorMessage: '无效标签页或非 LinkedIn 职位页。',
+      lastJobKey: message?.jobKey || null,
+      lastSource: 'oneclick_auto'
+    });
+    return;
+  }
+
+  await updateOneClickAutoState({
+    lastTriggeredAt: new Date().toISOString(),
+    lastJobKey: message?.jobKey || null,
+    lastSource: 'oneclick_auto'
+  });
+
+  try {
+    await ensureContentScript(tab.id);
+    const response = await sendTabMessage(tab.id, { type: 'GET_CURRENT_JOB_INFO' });
+
+    if (!response?.ok || !response.jobInfo) {
+      throw new Error('无法读取当前职位信息');
+    }
+
+    const fileName = buildFilename(response.jobInfo);
+    const textContent = buildTxtContent(response.jobInfo);
+    const pageDownloadResponse = await sendTabMessage(tab.id, {
+      type: 'DOWNLOAD_TXT_FILE',
+      fileName,
+      textContent
+    });
+
+    if (!pageDownloadResponse?.ok) {
+      await chrome.downloads.download({
+        url: encodeTextAsDataUrl(textContent),
+        filename: fileName,
+        saveAs: false,
+        conflictAction: 'uniquify'
+      });
+    }
+
+    await notifyTab(tab.id, `OneClick 联动已导出 JD: ${fileName}`, false);
+    await flashBadge('OK', '#15803d');
+
+    await updateOneClickAutoState({
+      lastSuccessAt: new Date().toISOString(),
+      lastWrittenFileName: fileName,
+      lastErrorCode: null,
+      lastErrorMessage: null,
+      lastRetryCount: 0
+    });
+  } catch (error) {
+    await notifyTab(tab.id, error?.message || 'OneClick 联动导出失败', true);
+    await flashBadge('ERR', '#b91c1c');
+
+    await updateOneClickAutoState({
+      lastFailureAt: new Date().toISOString(),
+      lastErrorCode: 'EXPORT_FAILED',
+      lastErrorMessage: error?.message || '导出失败'
+    });
+  }
+}
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (message?.type === 'ONECLICK_TRIGGERED') {
+    handleOneClickTriggered(message, sender).then(() => {
+      sendResponse({ ok: true });
+    }).catch(() => {
+      sendResponse({ ok: false });
+    });
+    return true;
+  }
+  return undefined;
+});
 
 chrome.action.onClicked.addListener((tab) => {
   exportCurrentJobFromTab(tab);

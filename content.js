@@ -753,6 +753,103 @@
     }
   }
 
+  // ---------------------------------------------------------------------------
+  // OneClick Job Tracker auto-trigger integration
+  // ---------------------------------------------------------------------------
+
+  // Only match the distinctive OneClick brand text — never matches LinkedIn native UI.
+  const ONECLICK_BUTTON_RE = /\boneclick\b/i;
+
+  const ONECLICK_DEBOUNCE_MS = 5000;
+  let lastOneClickTriggeredJobKey = null;
+  let lastOneClickTriggeredAt = 0;
+
+  function isOneClickButton(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return false;
+    const tag = String(element.tagName || '').toUpperCase();
+    // OneClick injects <button> or <a> elements; ignore random containers.
+    if (tag !== 'BUTTON' && tag !== 'A' && tag !== 'SPAN' && tag !== 'DIV') return false;
+    const text = String(element.textContent || '').trim();
+    if (!text || text.length > 60) return false;
+    return ONECLICK_BUTTON_RE.test(text);
+  }
+
+  function getOneClickJobKey() {
+    const rawUrl = location.href;
+    const jobId = extractJobIdFromRawUrl(rawUrl);
+    return jobId || rawUrl;
+  }
+
+  function shouldDebounceOneClick() {
+    const jobKey = getOneClickJobKey();
+    const now = Date.now();
+    if (jobKey === lastOneClickTriggeredJobKey && now - lastOneClickTriggeredAt < ONECLICK_DEBOUNCE_MS) {
+      return true;
+    }
+    return false;
+  }
+
+  function markOneClickTriggered() {
+    lastOneClickTriggeredJobKey = getOneClickJobKey();
+    lastOneClickTriggeredAt = Date.now();
+  }
+
+  async function isOneClickAutoEnabled() {
+    try {
+      const result = await chrome.storage.local.get('oneclickAutoSettings');
+      const settings = result?.oneclickAutoSettings;
+      return settings?.enabled !== false;
+    } catch (_error) {
+      return true;
+    }
+  }
+
+  async function triggerOneClickAutoExport() {
+    if (shouldDebounceOneClick()) return;
+
+    const enabled = await isOneClickAutoEnabled();
+    if (!enabled) return;
+
+    markOneClickTriggered();
+
+    try {
+      chrome.runtime.sendMessage({
+        type: 'ONECLICK_TRIGGERED',
+        jobKey: getOneClickJobKey(),
+        url: location.href
+      });
+    } catch (_error) {
+      // Non-blocking — background may not be ready.
+    }
+  }
+
+  function setupOneClickClickListener() {
+    document.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!target || target.nodeType !== Node.ELEMENT_NODE) return;
+
+      // Walk up to 4 levels to find the OneClick button container
+      let candidate = target;
+      for (let i = 0; i < 4 && candidate && candidate !== document.body; i += 1) {
+        if (isOneClickButton(candidate)) {
+          // Delay to let OneClick process the click first
+          window.setTimeout(() => {
+            triggerOneClickAutoExport();
+          }, 800);
+          return;
+        }
+        candidate = candidate.parentElement;
+      }
+    }, true);
+  }
+
+  // Initialize OneClick click listener
+  setupOneClickClickListener();
+
+  // ---------------------------------------------------------------------------
+  // Message listeners
+  // ---------------------------------------------------------------------------
+
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     if (!message || !message.type) return undefined;
 
