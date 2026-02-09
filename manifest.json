@@ -1,14 +1,13 @@
 {
   "manifest_version": 3,
   "name": "LinkedIn Job Pipeline",
-  "version": "1.0.0",
-  "description": "Track LinkedIn jobs in CSV and export job descriptions to TXT",
-  "permissions": ["activeTab", "scripting", "tabs", "storage"],
+  "version": "1.1.0",
+  "description": "Export LinkedIn job descriptions to TXT with one toolbar click",
+  "permissions": ["activeTab", "scripting", "downloads"],
   "background": {
     "service_worker": "background.js"
   },
   "action": {
-    "default_popup": "popup.html",
     "default_icon": {
       "16": "icons/icon16.png",
       "48": "icons/icon48.png",

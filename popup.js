@@ -6,12 +6,16 @@ const IDB_CONFIG = {
 };
 
 const PENDING_DRAFT_KEY = 'trackerPendingDraft';
+const ONECLICK_AUTO_SETTINGS_KEY = 'oneclickAutoSettings';
+const ONECLICK_AUTO_STATE_KEY = 'oneclickAutoState';
 const MESSAGE_TIMEOUT_MS = 15000;
 
 let activeTab = null;
 let currentJobInfo = null;
 let currentBindingState = null;
 let currentOutputBindingState = null;
+let currentOneClickAutoSettings = { enabled: true };
+let currentOneClickAutoState = null;
 let dbPromise = null;
 
 function setStatus(message, type) {
@@ -235,6 +239,43 @@ function createMappedError(errorCode, message, cause) {
   return error;
 }
 
+function getDefaultOneClickAutoSettings() {
+  return { enabled: true };
+}
+
+function getDefaultOneClickAutoState() {
+  return {
+    lastTriggeredAt: null,
+    lastSuccessAt: null,
+    lastFailureAt: null,
+    lastErrorCode: null,
+    lastErrorMessage: null,
+    lastJobKey: null,
+    lastWrittenFileName: null,
+    lastSource: 'oneclick_auto',
+    lastRetryCount: 0
+  };
+}
+
+async function getOneClickAutoSettings() {
+  const result = await chrome.storage.local.get(ONECLICK_AUTO_SETTINGS_KEY);
+  const stored = result?.[ONECLICK_AUTO_SETTINGS_KEY];
+  return { ...getDefaultOneClickAutoSettings(), ...(stored || {}) };
+}
+
+async function setOneClickAutoSettings(settings) {
+  const next = { ...getDefaultOneClickAutoSettings(), ...(settings || {}) };
+  await chrome.storage.local.set({ [ONECLICK_AUTO_SETTINGS_KEY]: next });
+  currentOneClickAutoSettings = next;
+  return next;
+}
+
+async function getOneClickAutoState() {
+  const result = await chrome.storage.local.get(ONECLICK_AUTO_STATE_KEY);
+  const stored = result?.[ONECLICK_AUTO_STATE_KEY];
+  return { ...getDefaultOneClickAutoState(), ...(stored || {}) };
+}
+
 async function ensureHandlePermission(handle, permissionLabel = '文件') {
   let permission = await handle.queryPermission({ mode: 'readwrite' });
   if (permission !== 'granted') {
@@ -439,6 +480,69 @@ function updateTxtOutputBindingUi(state) {
     parts.push(`Error: ${state.lastError}`);
   }
   detail.textContent = parts.join(' | ');
+}
+
+function formatDateTimeDisplay(value) {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  return date.toLocaleString();
+}
+
+function updateOneClickAutoUi(settings, state) {
+  const toggle = document.getElementById('oneclick-auto-enabled');
+  const summary = document.getElementById('oneclick-auto-summary');
+  const detail = document.getElementById('oneclick-auto-detail');
+  if (!toggle || !summary || !detail) return;
+
+  const enabled = Boolean(settings?.enabled);
+  toggle.checked = enabled;
+
+  const hasFailure = Boolean(state?.lastFailureAt);
+  const hasSuccess = Boolean(state?.lastSuccessAt);
+  if (!enabled) {
+    summary.textContent = '自动联动已关闭';
+  } else if (hasFailure && (!hasSuccess || state.lastFailureAt >= state.lastSuccessAt)) {
+    summary.textContent = '最近自动联动失败';
+  } else if (hasSuccess) {
+    summary.textContent = '最近自动联动成功';
+  } else {
+    summary.textContent = '自动联动已开启';
+  }
+
+  const parts = [];
+  const triggeredAt = formatDateTimeDisplay(state?.lastTriggeredAt);
+  const successAt = formatDateTimeDisplay(state?.lastSuccessAt);
+  const failureAt = formatDateTimeDisplay(state?.lastFailureAt);
+  if (triggeredAt) parts.push(`Last Trigger: ${triggeredAt}`);
+  if (successAt) parts.push(`Last Success: ${successAt}`);
+  if (failureAt) parts.push(`Last Failure: ${failureAt}`);
+  if (state?.lastJobKey) parts.push(`Job: ${state.lastJobKey}`);
+  if (state?.lastWrittenFileName) parts.push(`TXT: ${state.lastWrittenFileName}`);
+  if (Number.isFinite(state?.lastRetryCount)) parts.push(`Retry: ${state.lastRetryCount}`);
+  if (state?.lastErrorCode) {
+    const mapped = mapErrorMessage({ errorCode: state.lastErrorCode, message: state.lastErrorMessage });
+    parts.push(`Error: ${state.lastErrorCode}${mapped ? ` (${mapped})` : ''}`);
+  }
+
+  detail.textContent = parts.length > 0 ? parts.join(' | ') : '尚无自动联动记录。';
+}
+
+async function refreshOneClickAutoState(options = {}) {
+  const throwOnError = Boolean(options.throwOnError);
+  try {
+    currentOneClickAutoSettings = await getOneClickAutoSettings();
+    currentOneClickAutoState = await getOneClickAutoState();
+    updateOneClickAutoUi(currentOneClickAutoSettings, currentOneClickAutoState);
+    return {
+      settings: currentOneClickAutoSettings,
+      state: currentOneClickAutoState
+    };
+  } catch (error) {
+    setStatus(error.message || '获取自动联动状态失败。', 'error');
+    if (throwOnError) throw error;
+    return null;
+  }
 }
 
 async function refreshBindingState(options = {}) {
@@ -745,6 +849,32 @@ function registerFormPersistenceListeners() {
   }
 }
 
+function registerOneClickAutoListeners() {
+  const toggle = document.getElementById('oneclick-auto-enabled');
+  if (!toggle) return;
+
+  toggle.addEventListener('change', () => {
+    const enabled = Boolean(toggle.checked);
+    setOneClickAutoSettings({ enabled })
+      .then(() => refreshOneClickAutoState())
+      .then(() => {
+        setStatus(enabled ? 'OneClick 自动联动已开启。' : 'OneClick 自动联动已关闭。', 'success');
+      })
+      .catch((error) => {
+        toggle.checked = Boolean(currentOneClickAutoSettings?.enabled);
+        setStatus(mapErrorMessage(error) || '更新自动联动设置失败。', 'error');
+      });
+  });
+
+  chrome.storage.onChanged.addListener((changes, areaName) => {
+    if (areaName !== 'local') return;
+    if (!changes?.[ONECLICK_AUTO_SETTINGS_KEY] && !changes?.[ONECLICK_AUTO_STATE_KEY]) return;
+    refreshOneClickAutoState().catch(() => {
+      // Ignore passive refresh errors while popup is open.
+    });
+  });
+}
+
 document.addEventListener('DOMContentLoaded', async () => {
   const bindExistingButton = document.getElementById('bind-existing-btn');
   const createTemplateButton = document.getElementById('create-template-btn');
@@ -753,6 +883,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   const exportButton = document.getElementById('export-btn');
 
   registerFormPersistenceListeners();
+  registerOneClickAutoListeners();
 
   bindExistingButton.addEventListener('click', () => {
     withLoading(bindExistingButton, '绑定中...', async () => {
@@ -808,6 +939,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   try {
     await refreshBindingState();
     await refreshOutputBindingState();
+    await refreshOneClickAutoState();
     await refreshCurrentJobInfo();
     await loadRecordIntoForm();
     setStatus('准备就绪。', 'success');
