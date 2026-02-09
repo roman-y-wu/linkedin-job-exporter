@@ -706,6 +706,10 @@ async function exportTxtFromPopup() {
     throw new Error('CSV 未绑定。');
   }
 
+  // Re-check and request permission on user click to avoid stale handle permission.
+  await ensureStoredCsvWritePermission();
+  await ensureStoredTxtOutputWritePermission();
+
   await ensureScriptInjected(activeTab.id);
   const response = await sendTabMessage(activeTab.id, { type: 'EXPORT_TXT' });
   if (!response?.ok) {

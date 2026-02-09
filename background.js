@@ -32,6 +32,15 @@ const STATUS_TO_DATE_FIELD = {
   Rejected: 'rejected_at',
   Ghosted: 'ghosted_at'
 };
+const CSV_DATE_FIELDS = new Set([
+  'saved_at',
+  'applied_at',
+  'interview_at',
+  'rejected_at',
+  'ghosted_at',
+  'created_at',
+  'updated_at'
+]);
 
 const TRACKER_NEEDS_REBIND_CODES = new Set([
   ERROR_CODES.NO_BOUND_FILE,
@@ -229,6 +238,28 @@ function inferErrorCode(error) {
   return ERROR_CODES.UNKNOWN_ERROR;
 }
 
+function formatDateYmd(input) {
+  if (!input) return '';
+  const s = String(input).trim();
+  if (!s) return '';
+  // Already yyyy-mm-dd
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) {
+    return s;
+  }
+  const dt = new Date(s);
+  if (Number.isNaN(dt.getTime())) {
+    return '';
+  }
+  const y = dt.getFullYear();
+  const m = String(dt.getMonth() + 1).padStart(2, '0');
+  const d = String(dt.getDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
+}
+
+function todayYmd() {
+  return formatDateYmd(new Date().toISOString());
+}
+
 function toErrorPayload(error) {
   const errorCode = inferErrorCode(error);
   return {
@@ -370,7 +401,12 @@ async function resolveTxtOutputState() {
 function normalizeStoredRecord(input) {
   const record = {};
   for (const header of TrackerCsv.CSV_HEADERS) {
-    record[header] = input?.[header] == null ? '' : String(input[header]);
+    const raw = input?.[header] == null ? '' : String(input[header]);
+    if (CSV_DATE_FIELDS.has(header)) {
+      record[header] = formatDateYmd(raw);
+    } else {
+      record[header] = raw;
+    }
   }
   record.status = normalizeStatus(record.status);
   record.round1_pass = normalizeRoundValue(record.round1_pass);
@@ -502,6 +538,40 @@ async function resolveUniqueTxtFileName(directoryHandle, fileBaseName) {
   throw makeError(ERROR_CODES.OUTPUT_WRITE_FAILED, 'Could not resolve a unique file name in output directory.');
 }
 
+async function ensureDirectoryReadWritePermission(directoryHandle) {
+  if (!directoryHandle || typeof directoryHandle.queryPermission !== 'function') {
+    throw makeError(
+      ERROR_CODES.OUTPUT_DIR_PERMISSION_DENIED,
+      'Output directory handle cannot be used to check permission.'
+    );
+  }
+
+  let permission = 'prompt';
+  try {
+    permission = await directoryHandle.queryPermission({ mode: 'readwrite' });
+  } catch (error) {
+    if (error?.name === 'NotFoundError') {
+      throw makeError(ERROR_CODES.OUTPUT_DIR_NOT_FOUND, 'The bound output directory is no longer available.', error);
+    }
+    throw makeError(ERROR_CODES.OUTPUT_DIR_PERMISSION_DENIED, 'Failed to query output directory permission.', error);
+  }
+
+  if (permission !== 'granted' && typeof directoryHandle.requestPermission === 'function') {
+    try {
+      permission = await directoryHandle.requestPermission({ mode: 'readwrite' });
+    } catch (error) {
+      if (error?.name === 'NotFoundError') {
+        throw makeError(ERROR_CODES.OUTPUT_DIR_NOT_FOUND, 'The bound output directory is no longer available.', error);
+      }
+      throw makeError(ERROR_CODES.OUTPUT_DIR_PERMISSION_DENIED, 'Failed to request output directory permission.', error);
+    }
+  }
+
+  if (permission !== 'granted') {
+    throw makeError(ERROR_CODES.OUTPUT_DIR_PERMISSION_DENIED, 'Output directory write permission is denied.');
+  }
+}
+
 async function writeTxtToBoundDirectory(input) {
   const rawDirectoryHandle = await getStoredTxtOutputDirHandle();
   const directoryHandle = isDirectoryHandleLike(rawDirectoryHandle) ? rawDirectoryHandle : null;
@@ -514,6 +584,7 @@ async function writeTxtToBoundDirectory(input) {
 
   let targetFileName;
   try {
+    await ensureDirectoryReadWritePermission(directoryHandle);
     targetFileName = await resolveUniqueTxtFileName(directoryHandle, fileBaseName);
     const fileHandle = await directoryHandle.getFileHandle(targetFileName, { create: true });
     const writable = await fileHandle.createWritable();
@@ -579,7 +650,7 @@ function applyStatusTimestamp(record, status, nowIso) {
   const statusField = STATUS_TO_DATE_FIELD[status];
   if (!statusField) return;
   if (!record[statusField]) {
-    record[statusField] = nowIso;
+    record[statusField] = formatDateYmd(nowIso);
   }
 }
 
@@ -599,8 +670,8 @@ function mergeRecord(existingRecord, draft, nowIso) {
   merged.round2_pass = normalizeRoundValue(draft.round2_pass);
   merged.round3_pass = normalizeRoundValue(draft.round3_pass);
   merged.notes = draft.notes;
-  merged.created_at = merged.created_at || nowIso;
-  merged.updated_at = nowIso;
+  merged.created_at = formatDateYmd(merged.created_at || nowIso);
+  merged.updated_at = formatDateYmd(nowIso);
   applyStatusTimestamp(merged, merged.status, nowIso);
 
   return merged;
@@ -631,9 +702,10 @@ async function upsertTrackerRecordWithMode(recordDraft, options) {
     }
 
     const nowIso = new Date().toISOString();
+    const nowYmd = formatDateYmd(nowIso) || todayYmd();
     const records = await readCsvRecords(handle);
     const existingIndex = findLatestRecordIndexByJobKey(records, draft.record_key);
-    const merged = mergeRecord(existingIndex >= 0 ? records[existingIndex] : null, draft, nowIso);
+    const merged = mergeRecord(existingIndex >= 0 ? records[existingIndex] : null, draft, nowYmd);
 
     if (mode === 'append') {
       records.push(merged);

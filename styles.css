@@ -1,16 +1,59 @@
+/* ── Color Tokens (light defaults) ── */
+:root {
+  --panel-bg: #ffffff;
+  --panel-border: #d0d7de;
+  --panel-shadow: rgba(15, 23, 42, 0.16);
+  --panel-text: #1f2328;
+  --panel-text-secondary: #57606a;
+  --panel-label: #24292f;
+  --panel-input-bg: #ffffff;
+  --panel-input-border: #d0d7de;
+  --panel-close-bg: #f6f8fa;
+  --panel-close-bg-hover: #eaeef2;
+  --panel-btn-bg: #0969da;
+  --panel-btn-bg-hover: #0550ae;
+  --panel-btn-bg-disabled: #8eb7e5;
+  --toast-success-bg: #057642;
+  --toast-error-bg: #cf222e;
+  --error-text: #cf222e;
+}
+
+/* ── Dark mode overrides ── */
+@media (prefers-color-scheme: dark) {
+  :root {
+    --panel-bg: #21262d;
+    --panel-border: #30363d;
+    --panel-shadow: rgba(0, 0, 0, 0.4);
+    --panel-text: #e6edf3;
+    --panel-text-secondary: #8b949e;
+    --panel-label: #e6edf3;
+    --panel-input-bg: #0d1117;
+    --panel-input-border: #30363d;
+    --panel-close-bg: #30363d;
+    --panel-close-bg-hover: #484f58;
+    --panel-btn-bg: #388bfd;
+    --panel-btn-bg-hover: #58a6ff;
+    --panel-btn-bg-disabled: #264f78;
+    --toast-success-bg: #3fb950;
+    --toast-error-bg: #f85149;
+    --error-text: #f85149;
+  }
+}
+
+/* ── Panel ── */
 .linkedin-track-panel {
   position: fixed;
   right: 16px;
   bottom: 72px;
   width: 320px;
   padding: 12px;
-  border: 1px solid #d0d7de;
+  border: 1px solid var(--panel-border);
   border-radius: 12px;
-  background: #ffffff;
-  box-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);
+  background: var(--panel-bg);
+  box-shadow: 0 10px 28px var(--panel-shadow);
   z-index: 2147483647;
   font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  color: #1f2328;
+  color: var(--panel-text);
 }
 
 .linkedin-hidden {
@@ -26,8 +69,8 @@
 
 .linkedin-track-close-btn {
   border: none;
-  background: #f6f8fa;
-  color: #57606a;
+  background: var(--panel-close-bg);
+  color: var(--panel-text-secondary);
   border-radius: 6px;
   padding: 4px 8px;
   cursor: pointer;
@@ -35,12 +78,12 @@
 }
 
 .linkedin-track-close-btn:hover {
-  background: #eaeef2;
+  background: var(--panel-close-bg-hover);
 }
 
 .linkedin-track-job {
   font-size: 12px;
-  color: #57606a;
+  color: var(--panel-text-secondary);
   margin: 0 0 8px 0;
 }
 
@@ -48,17 +91,17 @@
   min-height: 16px;
   margin: 0 0 8px 0;
   font-size: 12px;
-  color: #57606a;
+  color: var(--panel-text-secondary);
 }
 
 .linkedin-track-message-error {
-  color: #cf222e;
+  color: var(--error-text);
 }
 
 .linkedin-track-label {
   display: block;
   font-size: 12px;
-  color: #24292f;
+  color: var(--panel-label);
   margin-bottom: 8px;
 }
 
@@ -66,12 +109,12 @@
 .linkedin-track-label textarea {
   width: 100%;
   margin-top: 4px;
-  border: 1px solid #d0d7de;
+  border: 1px solid var(--panel-input-border);
   border-radius: 8px;
   padding: 7px 8px;
   font-size: 12px;
-  color: #24292f;
-  background: #ffffff;
+  color: var(--panel-label);
+  background: var(--panel-input-bg);
 }
 
 .linkedin-track-rounds {
@@ -96,7 +139,7 @@
 .linkedin-track-panel-actions button {
   border: none;
   border-radius: 8px;
-  background: #0969da;
+  background: var(--panel-btn-bg);
   color: #ffffff;
   cursor: pointer;
   font-size: 12px;
@@ -105,29 +148,30 @@
 }
 
 .linkedin-track-panel-actions button:hover {
-  background: #0550ae;
+  background: var(--panel-btn-bg-hover);
 }
 
 .linkedin-track-panel-actions button:disabled {
-  background: #8eb7e5;
+  background: var(--panel-btn-bg-disabled);
   cursor: not-allowed;
 }
 
+/* ── Toast ── */
 .linkedin-job-tracker-toast {
   position: fixed;
   right: 16px;
   bottom: 16px;
   z-index: 2147483647;
-  background: #057642;
+  background: var(--toast-success-bg);
   color: #ffffff;
   padding: 8px 10px;
   border-radius: 8px;
   font-size: 12px;
-  box-shadow: 0 8px 20px rgba(15, 23, 42, 0.16);
+  box-shadow: 0 8px 20px var(--panel-shadow);
 }
 
 .linkedin-job-tracker-toast-error {
-  background: #cf222e;
+  background: var(--toast-error-bg);
 }
 
 .linkedin-job-tracker-toast-hidden {
