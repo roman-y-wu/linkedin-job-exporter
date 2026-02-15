@@ -759,19 +759,32 @@
 
   // Only match the distinctive OneClick brand text — never matches LinkedIn native UI.
   const ONECLICK_BUTTON_RE = /\boneclick\b/i;
+  const ONECLICK_BUTTON_MAX_LABEL_LENGTH = 80;
 
   const ONECLICK_DEBOUNCE_MS = 5000;
   let lastOneClickTriggeredJobKey = null;
   let lastOneClickTriggeredAt = 0;
 
-  function isOneClickButton(element) {
+  function getElementSearchableLabel(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return '';
+    return [
+      element.getAttribute('aria-label') || '',
+      element.getAttribute('title') || '',
+      element.textContent || ''
+    ].join(' ').replace(/\s+/g, ' ').trim();
+  }
+
+  function isInteractiveButtonLikeElement(element) {
     if (!element || element.nodeType !== Node.ELEMENT_NODE) return false;
     const tag = String(element.tagName || '').toUpperCase();
-    // OneClick injects <button> or <a> elements; ignore random containers.
-    if (tag !== 'BUTTON' && tag !== 'A' && tag !== 'SPAN' && tag !== 'DIV') return false;
-    const text = String(element.textContent || '').trim();
-    if (!text || text.length > 60) return false;
-    return ONECLICK_BUTTON_RE.test(text);
+    return tag === 'BUTTON' || tag === 'A' || element.getAttribute('role') === 'button';
+  }
+
+  function isOneClickButton(element) {
+    if (!isInteractiveButtonLikeElement(element)) return false;
+    const label = getElementSearchableLabel(element);
+    if (!label || label.length > ONECLICK_BUTTON_MAX_LABEL_LENGTH) return false;
+    return ONECLICK_BUTTON_RE.test(label);
   }
 
   function getOneClickJobKey() {
@@ -845,6 +858,231 @@
 
   // Initialize OneClick click listener
   setupOneClickClickListener();
+
+  // ---------------------------------------------------------------------------
+  // Dismiss / hide posting → hide OneClick button
+  // ---------------------------------------------------------------------------
+
+  const DISMISS_BUTTON_SELECTORS = [
+    'button[aria-label*="dismiss" i]',
+    'button[aria-label*="hide" i]',
+    'button[aria-label*="不感兴趣"]',
+    'button[aria-label*="忽略"]',
+    'button[aria-label*="隐藏"]'
+  ];
+  const DISMISS_ACTION_RE = /\b(dismiss|hide)\b/i;
+  const DISMISS_EXCLUDE_RE = /\bhidden gems?\b/i;
+  const DISMISS_LABEL_CN_RE = /(不感兴趣|忽略|隐藏)/;
+  const JOB_CARD_QUERY_SELECTOR = [
+    'li[data-occludable-job-id]',
+    'div[data-occludable-job-id]',
+    'li.jobs-search-results__list-item',
+    '.job-card-container',
+    '.job-card-list__entity-lockup'
+  ].join(', ');
+  const DISMISSED_JOB_CARD_KEYS = new Set();
+  const MAX_DISMISSED_JOB_CARD_KEYS = 200;
+  let dismissRehideObserver = null;
+
+  function isDismissButton(element) {
+    if (!isInteractiveButtonLikeElement(element)) return false;
+
+    // Check explicit dismiss selectors first.
+    for (const selector of DISMISS_BUTTON_SELECTORS) {
+      try {
+        if (element.matches(selector)) return true;
+      } catch (_error) {
+        // Ignore invalid selector.
+      }
+    }
+
+    const controlName = String(element.getAttribute('data-control-name') || '').toLowerCase();
+    if (controlName.includes('dismiss') || controlName.includes('hide')) return true;
+
+    const label = getElementSearchableLabel(element);
+    if (!label || label.length > 120) return false;
+    if (DISMISS_EXCLUDE_RE.test(label)) return false;
+    if (DISMISS_ACTION_RE.test(label)) return true;
+    if (DISMISS_LABEL_CN_RE.test(label)) return true;
+
+    return false;
+  }
+
+  function isLikelyJobCardContainer(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return false;
+    if (element.hasAttribute('data-occludable-job-id') || element.hasAttribute('data-job-id')) return true;
+
+    const classList = element.classList;
+    if (!classList) return false;
+
+    if (
+      classList.contains('job-card-container') ||
+      classList.contains('job-card-list__entity-lockup') ||
+      classList.contains('jobs-search-results__list-item')
+    ) {
+      return true;
+    }
+
+    if (String(element.tagName || '').toUpperCase() === 'LI' && classList.contains('scaffold-layout__list-item')) {
+      return Boolean(element.querySelector('[data-occludable-job-id], .job-card-container, .job-card-list__entity-lockup'));
+    }
+
+    return false;
+  }
+
+  function findJobCardContainer(element) {
+    if (!element || element.nodeType !== Node.ELEMENT_NODE) return null;
+
+    const closest = element.closest(JOB_CARD_QUERY_SELECTOR);
+    if (isLikelyJobCardContainer(closest)) return closest;
+
+    let candidate = element.parentElement;
+    for (let i = 0; i < 12 && candidate && candidate !== document.body; i += 1) {
+      if (isLikelyJobCardContainer(candidate)) return candidate;
+      candidate = candidate.parentElement;
+    }
+    return null;
+  }
+
+  function getJobCardKey(container) {
+    if (!container || container.nodeType !== Node.ELEMENT_NODE) return '';
+
+    const dataJobId = String(
+      container.getAttribute('data-occludable-job-id') ||
+      container.getAttribute('data-job-id') ||
+      container.dataset?.occludableJobId ||
+      container.dataset?.jobId ||
+      ''
+    ).trim();
+    if (dataJobId) return `job:${dataJobId}`;
+
+    const jobLink = container.querySelector('a[href*="/jobs/view/"]');
+    const jobHref = String(jobLink?.getAttribute('href') || jobLink?.href || '').trim();
+    if (!jobHref) return '';
+
+    const jobId = extractJobIdFromRawUrl(jobHref);
+    if (jobId) return `job:${jobId}`;
+
+    const stableUrl = jobHref.split('#')[0].split('?')[0];
+    return stableUrl ? `url:${stableUrl}` : '';
+  }
+
+  function rememberDismissedJobCard(container) {
+    const key = getJobCardKey(container);
+    if (!key) return '';
+
+    DISMISSED_JOB_CARD_KEYS.add(key);
+    if (DISMISSED_JOB_CARD_KEYS.size > MAX_DISMISSED_JOB_CARD_KEYS) {
+      const oldestKey = DISMISSED_JOB_CARD_KEYS.values().next().value;
+      if (oldestKey) DISMISSED_JOB_CARD_KEYS.delete(oldestKey);
+    }
+    return key;
+  }
+
+  function shouldHideForDismissedJobCard(container) {
+    const key = getJobCardKey(container);
+    return Boolean(key && DISMISSED_JOB_CARD_KEYS.has(key));
+  }
+
+  function hideOneClickButtonsInContainer(container) {
+    if (!container) return 0;
+    let hiddenCount = 0;
+
+    if (isOneClickButton(container) && !container.classList.contains('oneclick-hidden-by-dismiss')) {
+      container.classList.add('oneclick-hidden-by-dismiss');
+      hiddenCount += 1;
+    }
+
+    // Walk through interactive elements only to avoid hiding random containers.
+    container.querySelectorAll('button, a, [role="button"]').forEach((el) => {
+      if (isOneClickButton(el) && !el.classList.contains('oneclick-hidden-by-dismiss')) {
+        el.classList.add('oneclick-hidden-by-dismiss');
+        hiddenCount += 1;
+      }
+    });
+
+    return hiddenCount;
+  }
+
+  function hideOneClickButtonsInNode(node) {
+    if (!node || node.nodeType !== Node.ELEMENT_NODE) return;
+
+    const cards = new Set();
+    if (isLikelyJobCardContainer(node)) {
+      cards.add(node);
+    }
+    node.querySelectorAll(JOB_CARD_QUERY_SELECTOR).forEach((card) => {
+      if (isLikelyJobCardContainer(card)) cards.add(card);
+    });
+
+    cards.forEach((card) => {
+      if (shouldHideForDismissedJobCard(card)) {
+        hideOneClickButtonsInContainer(card);
+      }
+    });
+  }
+
+  function observeCardTemporarily(card, durationMs = 10000) {
+    if (!card || card.nodeType !== Node.ELEMENT_NODE) return;
+    const observer = new MutationObserver(() => {
+      hideOneClickButtonsInContainer(card);
+    });
+    observer.observe(card, { childList: true, subtree: true });
+    window.setTimeout(() => observer.disconnect(), durationMs);
+  }
+
+  function ensureDismissRehideObserver() {
+    if (dismissRehideObserver || !document.body) return;
+
+    dismissRehideObserver = new MutationObserver((mutations) => {
+      mutations.forEach((mutation) => {
+        mutation.addedNodes.forEach((node) => {
+          if (node && node.nodeType === Node.ELEMENT_NODE) {
+            hideOneClickButtonsInNode(node);
+          }
+        });
+      });
+    });
+
+    dismissRehideObserver.observe(document.body, { childList: true, subtree: true });
+  }
+
+  function setupDismissClickListener() {
+    document.addEventListener('click', (event) => {
+      const target = event.target;
+      if (!target || target.nodeType !== Node.ELEMENT_NODE) return;
+
+      // Walk up a few levels to find the actual dismiss button element.
+      let dismissBtn = null;
+      let candidate = target;
+      for (let i = 0; i < 5 && candidate && candidate !== document.body; i += 1) {
+        if (isDismissButton(candidate)) {
+          dismissBtn = candidate;
+          break;
+        }
+        candidate = candidate.parentElement;
+      }
+
+      if (!dismissBtn) return;
+
+      const card = findJobCardContainer(dismissBtn);
+      if (!card) return;
+
+      // Hide immediately.
+      hideOneClickButtonsInContainer(card);
+      const dismissedKey = rememberDismissedJobCard(card);
+
+      if (dismissedKey) {
+        ensureDismissRehideObserver();
+      } else {
+        // Fallback for cards without a stable ID.
+        observeCardTemporarily(card);
+      }
+    }, true);
+  }
+
+  // Initialize dismiss-to-hide listener.
+  setupDismissClickListener();
 
   // ---------------------------------------------------------------------------
   // Message listeners
